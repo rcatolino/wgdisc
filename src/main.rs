@@ -1,7 +1,7 @@
-use std::net::{IpAddr,TcpStream, TcpListener};
+use clap::{value_parser, Arg, ArgAction, ArgMatches, Command};
 use serde::{Deserialize, Serialize};
 use serde_json::Deserializer;
-use clap::{Arg, Command, ArgAction, ArgMatches};
+use std::net::{IpAddr, TcpListener, TcpStream};
 
 #[derive(Serialize, Deserialize, Debug)]
 enum Message {
@@ -11,9 +11,9 @@ enum Message {
 
 #[derive(Serialize, Deserialize, Debug)]
 struct PeerDef {
-    peer_key : Vec<u8>,
+    peer_key: Vec<u8>,
     endpoint: IpAddr,
-    allowed_ips : Vec<(IpAddr, u8)>,
+    allowed_ips: Vec<(IpAddr, u8)>,
 }
 
 trait Peer {
@@ -34,13 +34,16 @@ impl Peer for Client {
 }
 
 fn server_main(args: &ArgMatches) -> std::io::Result<()> {
-    let listener = TcpListener::bind("127.0.0.1:34254")?;
+    let listener = TcpListener::bind((
+        args.get_one::<String>("host").expect("required").as_str(),
+        *args.get_one::<u16>("port").expect("default"),
+    ))?;
     let msg = Message::AddPeer {
-        peer : PeerDef {
+        peer: PeerDef {
             peer_key: vec![0; 16],
             endpoint: "127.0.0.1".parse().unwrap(),
             allowed_ips: vec![("0.0.0.1".parse().unwrap(), 0)],
-        }
+        },
     };
 
     for stream in listener.incoming() {
@@ -51,7 +54,10 @@ fn server_main(args: &ArgMatches) -> std::io::Result<()> {
 }
 
 fn client_main(args: &ArgMatches) -> std::io::Result<()> {
-    let stream = TcpStream::connect("127.0.0.1:34254")?;
+    let stream = TcpStream::connect((
+        args.get_one::<String>("host").expect("required").as_str(),
+        *args.get_one::<u16>("port").expect("default"),
+    ))?;
     let msg_stream = Deserializer::from_reader(stream).into_iter::<Message>();
     for msg in msg_stream {
         println!("New message : {:?}", msg);
@@ -62,17 +68,30 @@ fn client_main(args: &ArgMatches) -> std::io::Result<()> {
 
 fn main() -> std::io::Result<()> {
     let matches = Command::new("wgdisc")
-        .arg(Arg::new("verbose").short('v').long("verbose").action(ArgAction::SetTrue))
+        .arg(
+            Arg::new("verbose")
+                .short('v')
+                .long("verbose")
+                .action(ArgAction::SetTrue),
+        )
         .subcommand_required(true)
         .subcommand(
             Command::new("client")
                 .arg(Arg::new("host").required(true))
-                .arg(Arg::new("port").default_value("31250"))
+                .arg(
+                    Arg::new("port")
+                        .value_parser(value_parser!(u16))
+                        .default_value("31250"),
+                ),
         )
         .subcommand(
             Command::new("server")
                 .arg(Arg::new("host").required(true))
-                .arg(Arg::new("port").default_value("31250"))
+                .arg(
+                    Arg::new("port")
+                        .value_parser(value_parser!(u16))
+                        .default_value("31250"),
+                ),
         )
         .get_matches();
 
@@ -84,5 +103,3 @@ fn main() -> std::io::Result<()> {
 
     Ok(())
 }
-
-

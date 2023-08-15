@@ -33,40 +33,28 @@ pub fn getsockaddrs<'a>(ifname: &'a str) -> impl Iterator<Item = SocketAddr> + '
 
 pub fn server_main(args: &ArgMatches) -> std::io::Result<()> {
     let wgifname = list()?;
-    let addrs: Vec<SocketAddr> = getsockaddrs(&wgifname)
-        .filter_map(|mut sockaddr| {
-            if let Some(filter) = args.get_one::<IpAddr>("address") {
-                if sockaddr.ip() != *filter {
-                    return None;
-                }
-            }
-
-            sockaddr.set_port(*args.get_one::<u16>("port").expect("default"));
-            Some(sockaddr)
-        })
-        .collect();
-
-    println!(
-        "Using wireguard interface {} and address {:?}",
-        wgifname, addrs
-    );
-
-    if addrs.len() == 0 {
-        let msg = format!("No address found for interface {}", wgifname);
-        return Err(IoError::new(ErrorKind::Other, msg));
-    }
-
+    let mut listeners = Vec::<TcpListener>::new();
     let poll = Poll::new()?;
     let events = Events::with_capacity(128);
 
-    let listener = TcpListener::bind(addrs[0])?;
+    for mut addr in getsockaddrs(&wgifname) {
+        let filter = args.get_one::<IpAddr>("address");
+        if filter.is_some() && Some(&addr.ip()) != filter {
+            continue
+        }
 
-    /*
-    let listener = TcpListener::bind((
-        args.get_one::<String>("host").expect("required").as_str(),
-        *args.get_one::<u16>("port").expect("default"),
-    ))?;
-    */
+        addr.set_port(*args.get_one::<u16>("port").expect("default"));
+        listeners.push(TcpListener::bind(addr)?);
+        println!(
+            "Using wireguard interface {} and address {:?}",
+            wgifname, addr
+        );
+    }
+
+    if listeners.len() == 0 {
+        let msg = format!("No address found for interface {}", wgifname);
+        return Err(IoError::new(ErrorKind::Other, msg));
+    }
 
     let msg = Message::AddPeer(PeerDef {
         peer_key: vec![0; 16],
@@ -74,7 +62,7 @@ pub fn server_main(args: &ArgMatches) -> std::io::Result<()> {
         allowed_ips: vec![("0.0.0.1".parse().unwrap(), 0)],
     });
 
-    for stream in listener.incoming() {
+    for stream in listeners[0].incoming() {
         let s = stream?;
         serde_json::to_writer(&s, &msg)?;
         let msg_stream = Deserializer::from_reader(&s).into_iter::<Message>();

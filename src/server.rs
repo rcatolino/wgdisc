@@ -1,12 +1,13 @@
 use crate::rpc::{Message, PeerDef};
 use crate::wireguard::list;
 use clap::ArgMatches;
-use mio::{Events, Poll};
+use mio::{Events, Poll, Interest, Token, };
+use mio::net::TcpListener;
 use nix::ifaddrs::getifaddrs;
 use serde_json::Deserializer;
 use std::io::Error as IoError;
 use std::io::ErrorKind;
-use std::net::{IpAddr, SocketAddr, TcpListener};
+use std::net::{IpAddr, SocketAddr};
 
 struct Server;
 impl Server {
@@ -34,10 +35,9 @@ pub fn getsockaddrs<'a>(ifname: &'a str) -> impl Iterator<Item = SocketAddr> + '
 pub fn server_main(args: &ArgMatches) -> std::io::Result<()> {
     let wgifname = list()?;
     let mut listeners = Vec::<TcpListener>::new();
-    let poll = Poll::new()?;
-    let events = Events::with_capacity(128);
+    let mut poll = Poll::new()?;
 
-    for mut addr in getsockaddrs(&wgifname) {
+    for (index, mut addr) in getsockaddrs(&wgifname).enumerate() {
         let filter = args.get_one::<IpAddr>("address");
         if filter.is_some() && Some(&addr.ip()) != filter {
             continue
@@ -45,6 +45,7 @@ pub fn server_main(args: &ArgMatches) -> std::io::Result<()> {
 
         addr.set_port(*args.get_one::<u16>("port").expect("default"));
         listeners.push(TcpListener::bind(addr)?);
+        poll.registry().register(&mut listeners[index], Token(index), Interest::READABLE)?;
         println!(
             "Using wireguard interface {} and address {:?}",
             wgifname, addr
@@ -62,18 +63,20 @@ pub fn server_main(args: &ArgMatches) -> std::io::Result<()> {
         allowed_ips: vec![("0.0.0.1".parse().unwrap(), 0)],
     });
 
-    for stream in listeners[0].incoming() {
-        let s = stream?;
-        serde_json::to_writer(&s, &msg)?;
-        let msg_stream = Deserializer::from_reader(&s).into_iter::<Message>();
-        for msg in msg_stream {
-            println!("New message : {:?}", msg);
-            match msg? {
-                Message::GetPeerList => serde_json::to_writer(&s, &Server::get_peer_list())?,
-                _ => println!("Unsupported message"),
+    let mut events = Events::with_capacity(128);
+    loop {
+        poll.poll(&mut events, None)?;
+        for event in events.iter() {
+            let (s, _) = listeners[event.token().0].accept()?;
+            serde_json::to_writer(&s, &msg)?;
+            let msg_stream = Deserializer::from_reader(&s).into_iter::<Message>();
+            for msg in msg_stream {
+                println!("New message : {:?}", msg);
+                match msg? {
+                    Message::GetPeerList => serde_json::to_writer(&s, &Server::get_peer_list())?,
+                    _ => println!("Unsupported message"),
+                }
             }
         }
     }
-
-    Ok(())
 }

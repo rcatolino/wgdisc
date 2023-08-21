@@ -1,5 +1,5 @@
-use crate::rpc::{Message, MsgBuf, PeerDef};
-use crate::wireguard::list;
+use crate::rpc::{Message, MsgBuf};
+use crate::wireguard;
 use clap::ArgMatches;
 use mio::net::TcpListener;
 use mio::{Events, Interest, Poll, Token};
@@ -12,8 +12,10 @@ use std::net::{IpAddr, SocketAddr};
 
 struct Server;
 impl Server {
-    fn get_peer_list() -> Message {
-        Message::AddPeers(Vec::new())
+    fn get_peer_list(ifname: &str) -> Message {
+        let peers = wireguard::get_peers(ifname)
+            .expect(format!("Unable to get wireguard peers for {}", ifname).as_ref());
+        Message::AddPeers(peers)
     }
 }
 
@@ -34,7 +36,7 @@ pub fn getsockaddrs<'a>(ifname: &'a str) -> impl Iterator<Item = SocketAddr> + '
 }
 
 pub fn server_main(args: &ArgMatches) -> std::io::Result<()> {
-    let wgifname = list()?;
+    let wgifname = wireguard::list()?;
     let mut listeners = Vec::<TcpListener>::new();
     let mut poll = Poll::new()?;
 
@@ -59,12 +61,6 @@ pub fn server_main(args: &ArgMatches) -> std::io::Result<()> {
         return Err(IoError::new(ErrorKind::Other, msg));
     }
 
-    let msg = Message::AddPeer(PeerDef {
-        peer_key: vec![0; 16],
-        endpoint: "127.0.0.1".parse().unwrap(),
-        allowed_ips: vec![("0.0.0.1".parse().unwrap(), 0)],
-    });
-
     let mut events = Events::with_capacity(128);
     let mut clients = HashMap::new();
     let mut count = listeners.len() + 1;
@@ -81,8 +77,6 @@ pub fn server_main(args: &ArgMatches) -> std::io::Result<()> {
                 clients.insert(count, (s, MsgBuf::new()));
                 count += 1;
             } else if token > listeners.len() {
-                // Client event
-                // serde_json::to_writer(&s, &msg)?;
                 let (stream, buffer) = clients
                     .get_mut(&token)
                     .expect("Polled event from non existing client !");
@@ -100,7 +94,7 @@ pub fn server_main(args: &ArgMatches) -> std::io::Result<()> {
                             match msg {
                                 Ok(Message::GetPeerList) => {
                                     println!("Received message GetPeerList");
-                                    serde_json::to_writer(&mut *stream, &Server::get_peer_list())?
+                                    serde_json::to_writer(&mut *stream, &Server::get_peer_list(wgifname.as_ref()))?
                                 }
                                 Err(e) => println!("Error deserializing msg : {:?}", e),
                                 Ok(m) => println!("Unsupported message {:?}", m),

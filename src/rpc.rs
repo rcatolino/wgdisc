@@ -13,8 +13,8 @@ pub enum Message {
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct PeerDef {
-    pub peer_key: Vec<u8>,
-    pub endpoint: IpAddr,
+    pub peer_key: String,
+    pub endpoint: (IpAddr, u16),
     pub allowed_ips: Vec<(IpAddr, u8)>,
 }
 

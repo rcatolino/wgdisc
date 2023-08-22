@@ -94,7 +94,10 @@ pub fn server_main(args: &ArgMatches) -> std::io::Result<()> {
                             match msg {
                                 Ok(Message::GetPeerList) => {
                                     println!("Received message GetPeerList");
-                                    serde_json::to_writer(&mut *stream, &Server::get_peer_list(wgifname.as_ref()))?
+                                    serde_json::to_writer(
+                                        &mut *stream,
+                                        &Server::get_peer_list(wgifname.as_ref()),
+                                    )?
                                 }
                                 Err(e) => println!("Error deserializing msg : {:?}", e),
                                 Ok(m) => println!("Unsupported message {:?}", m),

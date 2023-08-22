@@ -1,4 +1,5 @@
 use crate::rpc::{Message, PeerDef};
+use crate::wireguard;
 use clap::ArgMatches;
 use serde_json::Deserializer;
 use std::net::TcpStream;
@@ -6,6 +7,7 @@ use std::net::TcpStream;
 struct Client;
 impl Client {
     fn add_peer(peer: PeerDef) {
+        wireguard::add_peers("wg239", &[&peer]).expect("Failed to add peers");
         println!("New peer : {:?}", peer);
     }
 

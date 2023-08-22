@@ -18,6 +18,31 @@ pub struct PeerDef {
     pub allowed_ips: Vec<(IpAddr, u8)>,
 }
 
+impl PeerDef {
+    pub fn to_wg_set<'a>(&self) -> impl Iterator<Item = &'a str> + 'a {
+        return ["peer"].into_iter();
+    }
+
+    pub fn from_wg_dump(line: &str) -> Option<PeerDef> {
+        let conf: Vec<&str> = line.split_terminator('\t').collect();
+        let peer = PeerDef {
+            peer_key: conf[0].to_string(),
+            endpoint: conf[2]
+                .rsplit_once(':')
+                .and_then(|(ip, port)| Some((ip.parse().ok()?, port.parse().ok()?)))?,
+            allowed_ips: conf[3]
+                .split_terminator(',')
+                .filter_map(|ipmask| {
+                    let (ip, mask) = ipmask.rsplit_once('/')?;
+                    Some((ip.parse().ok()?, mask.parse().ok()?))
+                })
+                .collect(),
+        };
+
+        Some(peer)
+    }
+}
+
 pub struct MsgBuf {
     inner: VecDeque<u8>,
     position: usize,

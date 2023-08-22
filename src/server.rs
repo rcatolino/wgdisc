@@ -35,8 +35,7 @@ pub fn getsockaddrs<'a>(ifname: &'a str) -> impl Iterator<Item = SocketAddr> + '
         })
 }
 
-pub fn server_main(args: &ArgMatches) -> std::io::Result<()> {
-    let wgifname = wireguard::list()?;
+pub fn server_main(wgifname: &str, args: &ArgMatches) -> std::io::Result<()> {
     let mut listeners = Vec::<TcpListener>::new();
     let mut poll = Poll::new()?;
 

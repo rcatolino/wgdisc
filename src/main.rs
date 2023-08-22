@@ -17,10 +17,17 @@ fn main() -> std::io::Result<()> {
                 .long("verbose")
                 .action(ArgAction::SetTrue),
         )
+        .arg(Arg::new("interface").required(false))
         .subcommand_required(true)
         .subcommand(
             Command::new("client")
-                .arg(Arg::new("host").required(true))
+                .arg(
+                    Arg::new("address")
+                        .short('a')
+                        .long("address")
+                        .required(true)
+                        .help("Address of the discovery server"),
+                )
                 .arg(
                     Arg::new("port")
                         .value_parser(value_parser!(u16))
@@ -52,9 +59,12 @@ fn main() -> std::io::Result<()> {
         )
         .get_matches();
 
+    let filter = matches.get_one::<String>("interface");
+    let wgifname = wireguard::find_interface(filter.map(|s| s.as_str()))?;
+
     match matches.subcommand() {
-        Some(("client", submatches)) => client_main(submatches)?,
-        Some(("server", submatches)) => server_main(submatches)?,
+        Some(("client", submatches)) => client_main(&wgifname, submatches)?,
+        Some(("server", submatches)) => server_main(&wgifname, submatches)?,
         _ => unreachable!("Unknown or missing subcommand"),
     };
 

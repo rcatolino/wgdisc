@@ -19,8 +19,20 @@ pub struct PeerDef {
 }
 
 impl PeerDef {
-    pub fn to_wg_set<'a>(&self) -> impl Iterator<Item = &'a str> + 'a {
-        return ["peer"].into_iter();
+    pub fn to_wg_set<'a>(&self) -> impl Iterator<Item = String> + 'a {
+        [
+            String::from("peer"),
+            self.peer_key.clone(),
+            String::from("endpoint"),
+            format!("{}:{}", self.endpoint.0, self.endpoint.1),
+            String::from("allwed-ips"),
+            self.allowed_ips
+                .iter()
+                .map(|(ip, mask)| format!("{}/{}", ip, mask))
+                .collect::<Vec<String>>()
+                .join(","),
+        ]
+        .into_iter()
     }
 
     pub fn from_wg_dump(line: &str) -> Option<PeerDef> {

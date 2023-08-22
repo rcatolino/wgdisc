@@ -7,8 +7,7 @@ use std::process::Command;
 
 const WGPATH: &'static str = "/usr/bin/wg";
 
-// fn exec<'a>(path: &str, args: &[&str]) -> IoResult<String> {
-fn exec<'a, I, S>(path: &str, args: I) -> IoResult<String>
+fn exec<I, S>(path: &str, args: I) -> IoResult<String>
 where
     I: IntoIterator<Item = S>,
     S: AsRef<OsStr>,
@@ -42,35 +41,46 @@ pub fn get_peers(ifname: &str) -> IoResult<Vec<PeerDef>> {
         .collect())
 }
 
-pub fn list() -> IoResult<String> {
+pub fn find_interface(filter: Option<&str>) -> IoResult<String> {
     let stdout = exec("/usr/bin/wg", ["show", "interfaces"])?;
     let mut interfaces = stdout.trim_end().split_terminator('\n');
 
-    let result = match interfaces.nth(0) {
-        Some(r) => r,
-        None => {
-            let msg = format!("No wireguard interfaces found");
+    if let Some(ifname) = filter {
+        match interfaces.find(|name| name == &ifname) {
+            Some(name) => Ok(name.to_string()),
+            None => {
+                let msg = format!("No wireguard interface named {} found", ifname);
+                return Err(IoError::new(ErrorKind::Other, msg));
+            }
+        }
+    } else {
+        let res = match interfaces.nth(0) {
+            Some(r) => r,
+            None => {
+                let msg = format!("No wireguard interfaces found");
+                return Err(IoError::new(ErrorKind::Other, msg));
+            }
+        };
+
+        if interfaces.count() > 0 {
+            let msg = format!(
+                "Multiple wireguard interfaces found,
+                              please specify an interface name manually"
+            );
             return Err(IoError::new(ErrorKind::Other, msg));
         }
-    };
 
-    if interfaces.count() > 0 {
-        let msg = format!("Multiple wireguard interfaces found");
-        return Err(IoError::new(ErrorKind::Other, msg));
+        Ok(res.to_string())
     }
-
-    Ok(result.to_string())
 }
 
-pub fn add_peers(ifname: &str, peers: &[&PeerDef]) -> IoResult<()> {
-    /*
+pub fn add_peers<'a, T>(ifname: &str, peers: T) -> IoResult<()>
+where
+    T: IntoIterator<Item = &'a PeerDef>,
+{
     let args = [String::from("set"), String::from(ifname)]
         .into_iter()
         .chain(peers.into_iter().map(|p| p.to_wg_set()).flatten());
-        */
-    let args = ["set", ifname]
-        .into_iter()
-        .chain(peers.into_iter().map(|p| p.to_wg_set()).flatten());
-    let _stdout = exec(WGPATH, args);
+    exec(WGPATH, args)?;
     Ok(())
 }

@@ -1,24 +1,14 @@
-use crate::rpc::{Message, PeerDef};
+use crate::rpc::Message;
 use crate::wireguard;
 use clap::ArgMatches;
 use serde_json::Deserializer;
 use std::net::TcpStream;
 
-struct Client;
-impl Client {
-    fn add_peer(peer: PeerDef) {
-        wireguard::add_peers("wg239", &[&peer]).expect("Failed to add peers");
-        println!("New peer : {:?}", peer);
-    }
-
-    fn delete_peer(peer_key: &[u8]) {
-        println!("Delete peer with key {:?}", peer_key);
-    }
-}
-
-pub fn client_main(args: &ArgMatches) -> std::io::Result<()> {
+pub fn client_main(wgifname: &str, args: &ArgMatches) -> std::io::Result<()> {
     let stream = TcpStream::connect((
-        args.get_one::<String>("host").expect("required").as_str(),
+        args.get_one::<String>("address")
+            .expect("required")
+            .as_str(),
         *args.get_one::<u16>("port").expect("default"),
     ))?;
     /*
@@ -31,12 +21,12 @@ pub fn client_main(args: &ArgMatches) -> std::io::Result<()> {
     for msg in msg_stream {
         println!("New message : {:?}", msg);
         match msg? {
-            Message::AddPeer(peer) => Client::add_peer(peer),
-            Message::DeletePeer(peer_key) => Client::delete_peer(&peer_key),
+            Message::AddPeer(peer) => {
+                wireguard::add_peers(wgifname, [&peer])?;
+            }
+            Message::DeletePeer(_) => (),
             Message::AddPeers(peer_list) => {
-                for p in peer_list {
-                    Client::add_peer(p);
-                }
+                wireguard::add_peers(wgifname, peer_list.iter())?;
             }
             _ => println!("Unsupported message"),
         };

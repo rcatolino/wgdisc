@@ -16,11 +16,7 @@ where
     let output = cmd.args(args).output()?;
 
     if !output.status.success() {
-        let msg = format!(
-            "Error {:?} executing '{:?}'",
-            output.status.code(),
-            cmd
-        );
+        let msg = format!("Error {:?} executing '{:?}'", output.status.code(), cmd);
         return Err(IoError::new(ErrorKind::Other, msg));
     }
 

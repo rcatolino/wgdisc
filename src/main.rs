@@ -3,7 +3,7 @@ mod rpc;
 mod server;
 mod wireguard;
 
-use clap::{value_parser, Arg, ArgAction, Command, ArgMatches};
+use clap::{value_parser, Arg, ArgAction, ArgMatches, Command};
 
 use client::client_main;
 use server::server_main;

@@ -49,7 +49,9 @@ fn handle_messages<W: Write>(
                 println!("Received message GetPeerList");
                 serde_json::to_writer(&mut *stream, &Server::get_peer_list(wgifname))?
             }
-            Err(e) => println!("Error deserializing msg : {:?}", e),
+            Err(e) if e.is_eof() => (), // This just means we need to wait
+            // for more data to deserialize
+            Err(e) => return Err(IoError::new(ErrorKind::Other, e.to_string())),
             Ok(m) => println!("Unsupported message {:?}", m),
         }
     }
@@ -100,7 +102,7 @@ pub fn server_main(wgifname: &str, args: &ArgMatches) -> std::io::Result<()> {
                     count += 1;
                 }
                 Ordering::Equal => unreachable!(), // We start numbering clients from
-                                                   // listeners.len() + 1
+                // listeners.len() + 1
                 Ordering::Greater => {
                     // Client event
                     let (stream, buffer) = clients
@@ -113,8 +115,13 @@ pub fn server_main(wgifname: &str, args: &ArgMatches) -> std::io::Result<()> {
                         should_close = true;
                     } else {
                         println!("Read {} bytes from client {}.", drained, token);
-                        let consumed = handle_messages(wgifname, stream, buffer)?;
-                        buffer.consume(consumed);
+                        match handle_messages(wgifname, stream, buffer) {
+                            Ok(consumed) => buffer.consume(consumed),
+                            Err(e) => {
+                                println!("Error deserializing from client {} : {}. Terminating client.", token, e);
+                                should_close = true;
+                            }
+                        }
                     }
 
                     if event.is_read_closed() || should_close {

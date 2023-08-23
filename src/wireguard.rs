@@ -17,9 +17,8 @@ where
 
     if !output.status.success() {
         let msg = format!(
-            "Error {:?} executing '{} {:?}'",
+            "Error {:?} executing '{:?}'",
             output.status.code(),
-            path,
             cmd
         );
         return Err(IoError::new(ErrorKind::Other, msg));

@@ -3,13 +3,13 @@ mod rpc;
 mod server;
 mod wireguard;
 
-use clap::{value_parser, Arg, ArgAction, Command};
+use clap::{value_parser, Arg, ArgAction, Command, ArgMatches};
 
 use client::client_main;
 use server::server_main;
 use std::net::IpAddr;
 
-fn main() -> std::io::Result<()> {
+fn main() {
     let matches = Command::new("wgdisc")
         .override_usage("wgdisc [interface] subcommand [options]")
         .arg(
@@ -71,6 +71,12 @@ fn main() -> std::io::Result<()> {
         )
         .get_matches();
 
+    if let Err(e) = run_app(matches) {
+        println!("Error : {}", e.to_string());
+    }
+}
+
+fn run_app(matches: ArgMatches) -> std::io::Result<()> {
     let filter = matches.get_one::<String>("interface");
     let wgifname = wireguard::find_interface(filter.map(|s| s.as_str()))?;
 

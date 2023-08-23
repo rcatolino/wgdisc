@@ -99,7 +99,8 @@ pub fn server_main(wgifname: &str, args: &ArgMatches) -> std::io::Result<()> {
                     clients.insert(count, (s, MsgBuf::new()));
                     count += 1;
                 }
-                Ordering::Equal => unreachable!(),
+                Ordering::Equal => unreachable!(), // We start numbering clients from
+                                                   // listeners.len() + 1
                 Ordering::Greater => {
                     // Client event
                     let (stream, buffer) = clients

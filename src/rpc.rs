@@ -25,7 +25,7 @@ impl PeerDef {
             self.peer_key.clone(),
             String::from("endpoint"),
             format!("{}:{}", self.endpoint.0, self.endpoint.1),
-            String::from("allwed-ips"),
+            String::from("allowed-ips"),
             self.allowed_ips
                 .iter()
                 .map(|(ip, mask)| format!("{}/{}", ip, mask))

@@ -5,7 +5,7 @@ use std::io::ErrorKind;
 use std::io::Result as IoResult;
 use std::process::Command;
 
-const WGPATH: &'static str = "/usr/bin/wg";
+const WGPATH: &str = "/usr/bin/wg";
 
 fn exec<I, S>(path: &str, args: I) -> IoResult<String>
 where
@@ -37,7 +37,7 @@ pub fn get_peers(ifname: &str) -> IoResult<Vec<PeerDef>> {
         .trim_end()
         .split_terminator('\n')
         .skip(1)
-        .filter_map(|line| PeerDef::from_wg_dump(line))
+        .filter_map(PeerDef::from_wg_dump)
         .collect())
 }
 
@@ -50,23 +50,22 @@ pub fn find_interface(filter: Option<&str>) -> IoResult<String> {
             Some(name) => Ok(name.to_string()),
             None => {
                 let msg = format!("No wireguard interface named {} found", ifname);
-                return Err(IoError::new(ErrorKind::Other, msg));
+                Err(IoError::new(ErrorKind::Other, msg))
             }
         }
     } else {
-        let res = match interfaces.nth(0) {
+        let res = match interfaces.next() {
             Some(r) => r,
             None => {
-                let msg = format!("No wireguard interfaces found");
+                let msg = "No wireguard interfaces found".to_string();
                 return Err(IoError::new(ErrorKind::Other, msg));
             }
         };
 
         if interfaces.count() > 0 {
-            let msg = format!(
-                "Multiple wireguard interfaces found,
-                              please specify an interface name manually"
-            );
+            let msg = "Multiple wireguard interfaces found,
+                      please specify an interface name manually"
+                .to_string();
             return Err(IoError::new(ErrorKind::Other, msg));
         }
 
@@ -80,7 +79,7 @@ where
 {
     let args = [String::from("set"), String::from(ifname)]
         .into_iter()
-        .chain(peers.into_iter().map(|p| p.to_wg_set()).flatten());
+        .chain(peers.into_iter().flat_map(|p| p.to_wg_set()));
     exec(WGPATH, args)?;
     Ok(())
 }

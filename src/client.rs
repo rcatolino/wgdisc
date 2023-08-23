@@ -11,13 +11,12 @@ pub fn client_main(wgifname: &str, args: &ArgMatches) -> std::io::Result<()> {
             .as_str(),
         *args.get_one::<u16>("port").expect("default"),
     ))?;
-    /*
-    for msg in msg_stream {
-        println!("New message : {:?}", msg);
-    }
-    */
+
+    // We've just started, ask for all existing peers :
     serde_json::to_writer(&stream, &Message::GetPeerList)?;
     let msg_stream = Deserializer::from_reader(&stream).into_iter::<Message>();
+
+    // Listen for incoming messages
     for msg in msg_stream {
         println!("New message : {:?}", msg);
         match msg? {

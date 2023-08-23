@@ -11,13 +11,23 @@ use std::net::IpAddr;
 
 fn main() -> std::io::Result<()> {
     let matches = Command::new("wgdisc")
+        .override_usage("wgdisc [interface] subcommand [options]")
         .arg(
             Arg::new("verbose")
                 .short('v')
                 .long("verbose")
                 .action(ArgAction::SetTrue),
         )
-        .arg(Arg::new("interface").required(false))
+        .arg(
+            Arg::new("interface")
+                .next_line_help(true)
+                .help(
+                    "Wireguard interface name. \
+                   Only required if multiple wireguard \n\
+                   interfaces exist on the system",
+                )
+                .required(false),
+        )
         .subcommand_required(true)
         .subcommand(
             Command::new("client")
@@ -30,6 +40,8 @@ fn main() -> std::io::Result<()> {
                 )
                 .arg(
                     Arg::new("port")
+                        .short('p')
+                        .long("port")
                         .value_parser(value_parser!(u16))
                         .default_value("31250"),
                 ),

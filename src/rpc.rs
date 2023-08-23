@@ -74,7 +74,7 @@ impl Read for MsgBuf {
         let copy_size = std::cmp::min(buf.len(), src.len());
         buf[0..copy_size].copy_from_slice(&src[0..copy_size]);
         self.position += copy_size;
-        Ok(copy_size.try_into().unwrap())
+        Ok(copy_size)
     }
 }
 

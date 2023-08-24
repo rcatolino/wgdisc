@@ -1,18 +1,74 @@
-use crate::rpc::{Message, MsgBuf};
+use crate::rpc::{Message, MsgBuf, PeerDef};
 use crate::wireguard;
 use clap::ArgMatches;
-use mio::net::TcpListener;
+use mio::net::{TcpListener, TcpStream};
 use mio::{Events, Interest, Poll, Token};
 use nix::ifaddrs::getifaddrs;
 use serde_json::Deserializer;
 use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::io::Error as IoError;
+use std::io::Result as IoResult;
 use std::io::{ErrorKind, Write};
 use std::net::{IpAddr, SocketAddr};
 
-struct Server;
+struct Client {
+    stream: TcpStream,
+    buffer: MsgBuf,
+    pubkey: String,
+}
+
+struct Server {
+    peers: Vec<PeerDef>,
+    clients: HashMap<usize, Client>,
+    poll: Poll,
+    count: usize,
+    wgifname: String,
+}
+
+fn ip_in_net(ip: &IpAddr, net: &IpAddr, mask: u8) -> bool {
+    false 
+}
+
 impl Server {
+    fn find_peer(&self, addr: &SocketAddr) -> Option<&'_ PeerDef> {
+        for p in self.peers.iter() {
+            for (a, mask) in p.allowed_ips.iter() {
+                if ip_in_net(&addr.ip(), a, *mask) {
+                    return Some(&p);
+                }
+            }
+        }
+
+        return None
+    }
+
+    // Returns Ok(None) if no peer with matching ip was found
+    fn add_client(&mut self, mut stream: TcpStream, addr: &SocketAddr) -> IoResult<Option<()>> {
+        self.update_peers();
+        let key = match self.find_peer(addr) {
+            Some(peer) => peer.peer_key.clone(),
+            None => return Ok(None),
+        };
+
+        self.poll.registry()
+            .register(&mut stream, Token(self.count), Interest::READABLE)?;
+        let c = Client {
+            stream,
+            buffer: MsgBuf::new(),
+            pubkey: key,
+        };
+
+        self.clients.insert(self.count, c);
+        self.count += 1;
+        Ok(Some(()))
+    }
+
+    fn update_peers(&mut self) {
+        self.peers = wireguard::get_peers(&self.wgifname)
+            .unwrap_or_else(|_| panic!("Unable to get wireguard peers for {}", &self.wgifname));
+    }
+
     fn get_peer_list(ifname: &str) -> Message {
         let peers = wireguard::get_peers(ifname)
             .unwrap_or_else(|_| panic!("Unable to get wireguard peers for {}", ifname));
@@ -61,7 +117,13 @@ fn handle_messages<W: Write>(
 
 pub fn server_main(wgifname: &str, args: &ArgMatches) -> std::io::Result<()> {
     let mut listeners = Vec::<TcpListener>::new();
-    let mut poll = Poll::new()?;
+    let mut server = Server {
+        clients: HashMap::new(),
+        peers: Vec::new(),
+        poll: Poll::new()?,
+        count: 0,
+        wgifname: wgifname.to_string(),
+    };
 
     for (index, mut addr) in getsockaddrs(wgifname).enumerate() {
         let filter = args.get_one::<IpAddr>("address");
@@ -71,7 +133,7 @@ pub fn server_main(wgifname: &str, args: &ArgMatches) -> std::io::Result<()> {
 
         addr.set_port(*args.get_one::<u16>("port").expect("default"));
         listeners.push(TcpListener::bind(addr)?);
-        poll.registry()
+        server.poll.registry()
             .register(&mut listeners[index], Token(index), Interest::READABLE)?;
         println!(
             "Using wireguard interface {} and address {:?}",
@@ -85,38 +147,38 @@ pub fn server_main(wgifname: &str, args: &ArgMatches) -> std::io::Result<()> {
     }
 
     let mut events = Events::with_capacity(128);
-    let mut clients = HashMap::new();
-    let mut count = listeners.len() + 1;
+    server.count = listeners.len() + 1;
     loop {
-        poll.poll(&mut events, None)?;
+        server.poll.poll(&mut events, None)?;
         for event in events.iter() {
             // println!("New event : {:?}", event);
             let token = event.token().0;
             match token.cmp(&listeners.len()) {
                 Ordering::Less => {
-                    // Listener event
-                    let (mut s, _) = listeners[token].accept()?;
-                    poll.registry()
-                        .register(&mut s, Token(count), Interest::READABLE)?;
-                    clients.insert(count, (s, MsgBuf::new()));
-                    count += 1;
+                    // Listener event : new client
+                    let (s, addr) = listeners[token].accept()?;
+                    println!("New client with address {}", addr);
+                    if server.add_client(s, &addr)?.is_none() {
+                        println!("No client found with allowed-ip matching address {}", addr.ip());
+                    }
                 }
                 Ordering::Equal => unreachable!(), // We start numbering clients from
                 // listeners.len() + 1
                 Ordering::Greater => {
                     // Client event
-                    let (stream, buffer) = clients
+                    let client = server
+                        .clients
                         .get_mut(&token)
                         .expect("Polled event from non existing client !");
 
-                    let drained = buffer.drain(stream)?;
+                    let drained = client.buffer.drain(&mut client.stream)?;
                     let mut should_close = false;
                     if drained == 0 {
                         should_close = true;
                     } else {
                         println!("Read {} bytes from client {}.", drained, token);
-                        match handle_messages(wgifname, stream, buffer) {
-                            Ok(consumed) => buffer.consume(consumed),
+                        match handle_messages(wgifname, &mut client.stream, &mut client.buffer) {
+                            Ok(consumed) => client.buffer.consume(consumed),
                             Err(e) => {
                                 println!(
                                     "Error deserializing from client {} : {}. Terminating client.",
@@ -128,8 +190,9 @@ pub fn server_main(wgifname: &str, args: &ArgMatches) -> std::io::Result<()> {
                     }
 
                     if event.is_read_closed() || should_close {
-                        poll.registry().deregister(stream)?;
-                        clients.remove(&token);
+                        println!("Closing client {}", token);
+                        server.poll.registry().deregister(&mut client.stream)?;
+                        server.clients.remove(&token);
                     }
                 }
             }

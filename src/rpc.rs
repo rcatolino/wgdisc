@@ -41,20 +41,22 @@ impl PeerDef {
     }
 
     pub fn from_wg_dump(line: &str) -> Option<PeerDef> {
-        let conf: Vec<&str> = line.split_terminator('\t').collect();
+        let mut conf = line.split_terminator('\t');
         let peer = PeerDef {
-            peer_key: conf[0].to_string(),
-            endpoint: conf[2]
+            peer_key: conf.next()?.to_string(),
+            endpoint: conf
+                .nth(1)?
                 .rsplit_once(':')
                 .and_then(|(ip, port)| Some((ip.parse().ok()?, port.parse().ok()?)))?,
-            allowed_ips: conf[3]
+            allowed_ips: conf
+                .next()?
                 .split_terminator(',')
                 .filter_map(|ipmask| {
                     let (ip, mask) = ipmask.rsplit_once('/')?;
                     Some((ip.parse().ok()?, mask.parse().ok()?))
                 })
                 .collect(),
-            keepalive: conf[7].parse::<u32>().ok(),
+            keepalive: conf.nth(3)?.parse::<u32>().ok(),
         };
 
         Some(peer)
@@ -87,7 +89,7 @@ impl Read for MsgBuf {
 impl MsgBuf {
     pub fn new() -> Self {
         MsgBuf {
-            inner: VecDeque::with_capacity(16),
+            inner: VecDeque::with_capacity(1024),
             position: 0,
         }
     }

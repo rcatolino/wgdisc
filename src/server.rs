@@ -118,7 +118,10 @@ pub fn server_main(wgifname: &str, args: &ArgMatches) -> std::io::Result<()> {
                         match handle_messages(wgifname, stream, buffer) {
                             Ok(consumed) => buffer.consume(consumed),
                             Err(e) => {
-                                println!("Error deserializing from client {} : {}. Terminating client.", token, e);
+                                println!(
+                                    "Error deserializing from client {} : {}. Terminating client.",
+                                    token, e
+                                );
                                 should_close = true;
                             }
                         }

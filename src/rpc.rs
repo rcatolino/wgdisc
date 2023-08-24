@@ -16,6 +16,7 @@ pub struct PeerDef {
     pub peer_key: String,
     pub endpoint: (IpAddr, u16),
     pub allowed_ips: Vec<(IpAddr, u8)>,
+    pub keepalive: Option<u32>,
 }
 
 impl PeerDef {
@@ -31,6 +32,10 @@ impl PeerDef {
                 .map(|(ip, mask)| format!("{}/{}", ip, mask))
                 .collect::<Vec<String>>()
                 .join(","),
+            String::from("persistent-keepalive"),
+            self.keepalive
+                .map(|u| u.to_string())
+                .unwrap_or("off".to_string()),
         ]
         .into_iter()
     }
@@ -49,6 +54,7 @@ impl PeerDef {
                     Some((ip.parse().ok()?, mask.parse().ok()?))
                 })
                 .collect(),
+            keepalive: conf[7].parse::<u32>().ok(),
         };
 
         Some(peer)

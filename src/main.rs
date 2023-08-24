@@ -72,7 +72,7 @@ fn main() {
         .get_matches();
 
     if let Err(e) = run_app(matches) {
-        println!("Error : {}", e.to_string());
+        println!("Error : {}", e);
     }
 }
 

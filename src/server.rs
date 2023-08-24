@@ -1,3 +1,4 @@
+use crate::cidr;
 use crate::rpc::{Message, MsgBuf, PeerDef};
 use crate::wireguard;
 use clap::ArgMatches;
@@ -26,21 +27,20 @@ struct Server {
     wgifname: String,
 }
 
-fn ip_in_net(ip: &IpAddr, net: &IpAddr, mask: u8) -> bool {
-    false 
-}
-
 impl Server {
     fn find_peer(&self, addr: &SocketAddr) -> Option<&'_ PeerDef> {
+        let mut best_match = None;
+        let mut best_mask = None;
         for p in self.peers.iter() {
             for (a, mask) in p.allowed_ips.iter() {
-                if ip_in_net(&addr.ip(), a, *mask) {
-                    return Some(&p);
+                if cidr::ip_in_net(&addr.ip(), a, *mask) && best_mask.unwrap_or(0) <= *mask {
+                    best_mask = Some(*mask);
+                    best_match = Some(p);
                 }
             }
         }
 
-        return None
+        return best_match;
     }
 
     // Returns Ok(None) if no peer with matching ip was found
@@ -51,8 +51,10 @@ impl Server {
             None => return Ok(None),
         };
 
-        self.poll.registry()
+        self.poll
+            .registry()
             .register(&mut stream, Token(self.count), Interest::READABLE)?;
+
         let c = Client {
             stream,
             buffer: MsgBuf::new(),
@@ -133,7 +135,9 @@ pub fn server_main(wgifname: &str, args: &ArgMatches) -> std::io::Result<()> {
 
         addr.set_port(*args.get_one::<u16>("port").expect("default"));
         listeners.push(TcpListener::bind(addr)?);
-        server.poll.registry()
+        server
+            .poll
+            .registry()
             .register(&mut listeners[index], Token(index), Interest::READABLE)?;
         println!(
             "Using wireguard interface {} and address {:?}",
@@ -159,7 +163,10 @@ pub fn server_main(wgifname: &str, args: &ArgMatches) -> std::io::Result<()> {
                     let (s, addr) = listeners[token].accept()?;
                     println!("New client with address {}", addr);
                     if server.add_client(s, &addr)?.is_none() {
-                        println!("No client found with allowed-ip matching address {}", addr.ip());
+                        println!(
+                            "No client found with allowed-ip matching address {}",
+                            addr.ip()
+                        );
                     }
                 }
                 Ordering::Equal => unreachable!(), // We start numbering clients from

@@ -1,3 +1,4 @@
+mod cidr;
 mod client;
 mod rpc;
 mod server;

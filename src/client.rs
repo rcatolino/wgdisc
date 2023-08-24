@@ -1,4 +1,4 @@
-use crate::rpc::Message;
+use crate::rpc::{RecvMessage, SendMessage};
 use crate::wireguard;
 use clap::ArgMatches;
 use serde_json::Deserializer;
@@ -13,20 +13,16 @@ pub fn client_main(wgifname: &str, args: &ArgMatches) -> std::io::Result<()> {
     ))?;
 
     // We've just started, ask for all existing peers :
-    serde_json::to_writer(&stream, &Message::GetPeerList)?;
-    let msg_stream = Deserializer::from_reader(&stream).into_iter::<Message>();
+    serde_json::to_writer(&stream, &SendMessage::GetPeerList)?;
+    let msg_stream = Deserializer::from_reader(&stream).into_iter::<RecvMessage>();
 
     // Listen for incoming messages
     for msg in msg_stream {
-        println!("New message : {:?}", msg);
+        // println!("New message : {:?}", msg);
         match msg? {
-            Message::AddPeer(peer) => {
-                wireguard::add_peers(wgifname, [&peer])?;
-            }
-            Message::DeletePeer(_) => (),
-            Message::AddPeers(peer_list) => {
-                wireguard::add_peers(wgifname, peer_list.iter())?;
-            }
+            RecvMessage::AddPeer(peer) => wireguard::add_peers(wgifname, [&peer])?,
+            RecvMessage::AddPeers(peer_list) => wireguard::add_peers(wgifname, peer_list.iter())?,
+            RecvMessage::DeletePeer(key) => wireguard::delete_peer(wgifname, &key)?,
             _ => println!("Unsupported message"),
         };
     }

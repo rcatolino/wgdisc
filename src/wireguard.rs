@@ -68,6 +68,11 @@ pub fn find_interface(filter: Option<&str>) -> IoResult<String> {
     }
 }
 
+pub fn delete_peer(ifname: &str, peer_key: &str) -> IoResult<()> {
+    exec("/usr/bin/wg", ["set", ifname, "peer", peer_key, "remove"])?;
+    Ok(())
+}
+
 pub fn add_peers<'a, T>(ifname: &str, peers: T) -> IoResult<()>
 where
     T: IntoIterator<Item = &'a PeerDef>,

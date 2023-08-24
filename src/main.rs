@@ -72,9 +72,12 @@ fn main() {
         )
         .get_matches();
 
+    /*
     if let Err(e) = run_app(matches) {
         println!("Error : {}", e);
     }
+    */
+    run_app(matches).unwrap();
 }
 
 fn run_app(matches: ArgMatches) -> std::io::Result<()> {

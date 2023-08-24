@@ -3,10 +3,20 @@ use std::collections::VecDeque;
 use std::io::{copy, ErrorKind, Read, Result};
 use std::net::IpAddr;
 
-#[derive(Serialize, Deserialize, Debug)]
-pub enum Message {
+// We separate the receive/send message because this allows us to remove a vec allocation
+// in the serializing case
+#[derive(Serialize, Debug)]
+pub enum SendMessage<'a> {
+    AddPeer(&'a PeerDef),
+    DeletePeer(&'a str),
+    AddPeers(&'a [PeerDef]),
+    GetPeerList,
+}
+
+#[derive(Deserialize, Debug)]
+pub enum RecvMessage {
     AddPeer(PeerDef),
-    DeletePeer(Vec<u8>),
+    DeletePeer(String),
     AddPeers(Vec<PeerDef>),
     GetPeerList,
 }
@@ -42,12 +52,12 @@ impl PeerDef {
 
     pub fn from_wg_dump(line: &str) -> Option<PeerDef> {
         let mut conf = line.split_terminator('\t');
+        let brackets: &[_] = &['[', ']'];
         let peer = PeerDef {
             peer_key: conf.next()?.to_string(),
-            endpoint: conf
-                .nth(1)?
-                .rsplit_once(':')
-                .and_then(|(ip, port)| Some((ip.parse().ok()?, port.parse().ok()?)))?,
+            endpoint: conf.nth(1)?.rsplit_once(':').and_then(|(ip, port)| {
+                Some((ip.trim_matches(brackets).parse().ok()?, port.parse().ok()?))
+            })?,
             allowed_ips: conf
                 .next()?
                 .split_terminator(',')

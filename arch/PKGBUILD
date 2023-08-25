@@ -10,7 +10,7 @@ license=('GPL3')
 depends=('wireguard-tools')
 makedepends=('rust')
 
-source=("$pkgname"::"git+https://github.com/rcatolino/wgdisc.git")
+source=("$pkgname"::"git+https://github.com/rcatolino/wgdisc.git#branch=master")
 sha256sums=('SKIP')
 
 build() {

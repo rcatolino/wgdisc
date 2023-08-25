@@ -1,0 +1,30 @@
+_version=0.1.0
+
+pkgname=wgdisc
+pkgver="${_version//-/_}"
+pkgrel=1
+pkgdesc="Wireguard peer discovery client/server"
+arch=('x86_64')
+#url=""
+license=('GPL3')
+depends=('wireguard-tools')
+makedepends=('rust')
+
+source=("$pkgname"::"git+https://github.com/rcatolino/wgdisc.git")
+sha256sums=('SKIP')
+
+build() {
+  cd "${srcdir}/wgdisc"
+  cargo test
+  cargo build --release
+}
+
+package() {
+  install -D -m755 -t "${pkgdir}/usr/lib/systemd/system/" "${srcdir}/wgdisc/wgdisc-client@.service"
+  install -D -m755 -t "${pkgdir}/usr/bin/" "${srcdir}/wgdisc/target/release/wgdisc"
+  #install -D -m755 "wgdisc-client@.service" "/usr/share/systemd/system"
+}
+
+post_install() {
+  /usr/bin/systemctl daemon-reload
+}

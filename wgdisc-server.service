@@ -1,0 +1,16 @@
+[Unit]
+Description=wireguard peer discovery server
+
+[Service]
+DynamicUser=true
+AmbientCapabilities=CAP_NET_ADMIN
+NoNewPrivileges=true
+ProtectSystem=strict
+RestrictAddressFamilies=AF_NETLINK AF_INET AF_INET6
+
+ExecStart=/usr/bin/wgdisc server
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

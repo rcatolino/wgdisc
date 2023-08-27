@@ -21,6 +21,7 @@ build() {
 
 package() {
   install -D -m755 -t "${pkgdir}/usr/lib/systemd/system/" "${srcdir}/wgdisc/wgdisc-client@.service"
+  install -D -m755 -t "${pkgdir}/usr/lib/systemd/system/" "${srcdir}/wgdisc/wgdisc-server.service"
   install -D -m755 -t "${pkgdir}/usr/bin/" "${srcdir}/wgdisc/target/release/wgdisc"
   #install -D -m755 "wgdisc-client@.service" "/usr/share/systemd/system"
 }

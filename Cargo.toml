@@ -2,8 +2,18 @@
 name = "wgdisc"
 version = "0.1.0"
 edition = "2021"
+description = "Wireguard peer discovery client/server"
+license = "GPL-3-0"
+authors = ["Raphael Catolino"]
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+[package.metadata.deb]
+depends = [ "wireguard" ]
+assets = [
+    ["wgdisc-client@.service", "usr/lib/systemd/system/", "644"],
+    ["wgdisc-server.service", "usr/lib/systemd/system/", "644"],
+    ["README.md", "usr/share/doc/wgdisc/", "444"],
+    ["target/release/wgdisc", "usr/bin/", "755"],
+]
 
 [profile.release]
 strip = "debuginfo"

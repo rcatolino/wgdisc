@@ -17,7 +17,15 @@ where
     let output = cmd.args(args).stderr(Stdio::inherit()).output()?;
 
     if !output.status.success() {
-        let msg = format!("Command '{:?}' exited with {}", cmd, output.status.code().map(|i| i.to_string()).unwrap_or(String::from("Signal")));
+        let msg = format!(
+            "Command '{:?}' exited with {}",
+            cmd,
+            output
+                .status
+                .code()
+                .map(|i| i.to_string())
+                .unwrap_or(String::from("Signal"))
+        );
         return Err(IoError::new(ErrorKind::Other, msg));
     }
 

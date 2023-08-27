@@ -2,7 +2,18 @@ use crate::rpc::{RecvMessage, SendMessage};
 use crate::wireguard;
 use clap::ArgMatches;
 use serde_json::Deserializer;
-use std::net::TcpStream;
+use std::collections::HashMap;
+use std::net::{IpAddr, TcpStream};
+
+fn insert_override(
+    ip_adds: &mut HashMap<String, (IpAddr, u8)>,
+    pubkey: &str,
+    ipnet: &str,
+) -> Option<()> {
+    let (ip, mask) = ipnet.rsplit_once('/')?;
+    ip_adds.insert(String::from(pubkey), (ip.parse().ok()?, mask.parse().ok()?));
+    Some(())
+}
 
 pub fn client_main(wgifname: &str, args: &ArgMatches) -> std::io::Result<()> {
     let stream = TcpStream::connect((
@@ -15,6 +26,36 @@ pub fn client_main(wgifname: &str, args: &ArgMatches) -> std::io::Result<()> {
     // We've just started, ask for all existing peers :
     serde_json::to_writer(&stream, &SendMessage::GetPeerList)?;
     let msg_stream = Deserializer::from_reader(&stream).into_iter::<RecvMessage>();
+
+    let mut ip_adds = HashMap::new();
+    let mut ip_removes = HashMap::new();
+    for o in args.get_many::<String>("override").expect("test") {
+        if let Some((pubkey, ipnet)) = o.rsplit_once('+') {
+            if insert_override(&mut ip_adds, pubkey, ipnet).is_none() {
+                println!(
+                    "Error parsing ip/mask {}, ignoring override for {}",
+                    ipnet, pubkey
+                );
+            }
+            continue;
+        }
+
+        if let Some((pubkey, ipnet)) = o.rsplit_once('-') {
+            if insert_override(&mut ip_removes, pubkey, ipnet).is_none() {
+                println!(
+                    "Error parsing ip/mask {}, ignoring override for {}",
+                    ipnet, pubkey
+                );
+            }
+
+            continue;
+        }
+
+        println!(
+            "Ignored override '{}', missing +/- separator between pubkey and ip network",
+            o
+        );
+    }
 
     // Listen for incoming messages
     for msg in msg_stream {

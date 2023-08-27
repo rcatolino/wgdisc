@@ -45,6 +45,19 @@ fn main() {
                         .long("port")
                         .value_parser(value_parser!(u16))
                         .default_value("31250"),
+                )
+                .arg(
+                    Arg::new("override")
+                        .short('o')
+                        .long("override")
+                        .value_delimiter(',')
+                        .value_name("pubkey>+<0.0.0.0/0>,<pubkey>-<192.168.2.0/24")
+                        .next_line_help(true)
+                        .help(
+                            "Override allowed-ips for peer. \
+                              IPs prefixed with + will be added to the list of allowed ips, \
+                              IPs prefixed with - will be removed, if present.",
+                        ),
                 ),
         )
         .subcommand(

@@ -18,7 +18,6 @@ pub fn client_main(wgifname: &str, args: &ArgMatches) -> std::io::Result<()> {
 
     // Listen for incoming messages
     for msg in msg_stream {
-        // println!("New message : {:?}", msg);
         match msg? {
             RecvMessage::AddPeer(peer) => wireguard::add_peers(wgifname, [&peer])?,
             RecvMessage::AddPeers(peer_list) => wireguard::add_peers(wgifname, peer_list.iter())?,

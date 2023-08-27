@@ -3,7 +3,8 @@ use std::ffi::OsStr;
 use std::io::Error as IoError;
 use std::io::ErrorKind;
 use std::io::Result as IoResult;
-use std::process::Command;
+use std::process::{Command, Stdio};
+use std::string::ToString;
 
 const WGPATH: &str = "/usr/bin/wg";
 
@@ -13,10 +14,10 @@ where
     S: AsRef<OsStr>,
 {
     let mut cmd = Command::new(path);
-    let output = cmd.args(args).output()?;
+    let output = cmd.args(args).stderr(Stdio::inherit()).output()?;
 
     if !output.status.success() {
-        let msg = format!("Error {:?} executing '{:?}'", output.status.code(), cmd);
+        let msg = format!("Command '{:?}' exited with {}", cmd, output.status.code().map(|i| i.to_string()).unwrap_or(String::from("Signal")));
         return Err(IoError::new(ErrorKind::Other, msg));
     }
 

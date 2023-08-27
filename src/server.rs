@@ -27,7 +27,6 @@ impl Client {
             // Empty read, the socket must be closed
             return Ok(true);
         } else {
-            // println!("Read {} bytes from client {}.", drained, self.addr);
             match self.handle_messages(peers) {
                 Ok(consumed) => self.buffer.consume(consumed),
                 Err(e) => {

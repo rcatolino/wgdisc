@@ -60,8 +60,17 @@ pub fn client_main(wgifname: &str, args: &ArgMatches) -> std::io::Result<()> {
     // Listen for incoming messages
     for msg in msg_stream {
         match msg? {
-            RecvMessage::AddPeer(peer) => wireguard::add_peers(wgifname, [&peer])?,
-            RecvMessage::AddPeers(peer_list) => wireguard::add_peers(wgifname, peer_list.iter())?,
+            RecvMessage::AddPeer(mut peer) => {
+                peer.filter_allowed_ips(&ip_adds, &ip_removes);
+                wireguard::add_peers(wgifname, [&peer])?;
+            }
+            RecvMessage::AddPeers(mut peer_list) => wireguard::add_peers(
+                wgifname,
+                peer_list.iter_mut().map(|p| {
+                    p.filter_allowed_ips(&ip_adds, &ip_removes);
+                    &*p
+                }),
+            )?,
             RecvMessage::DeletePeer(key) => wireguard::delete_peer(wgifname, &key)?,
             _ => println!("Unsupported message"),
         };

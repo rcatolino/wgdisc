@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::collections::VecDeque;
 use std::io::{copy, ErrorKind, Read, Result};
 use std::net::IpAddr;
@@ -30,6 +31,25 @@ pub struct PeerDef {
 }
 
 impl PeerDef {
+    pub fn filter_allowed_ips(
+        &mut self,
+        adds: &HashMap<String, (IpAddr, u8)>,
+        removes: &HashMap<String, (IpAddr, u8)>,
+    ) {
+        if let Some(ip_to_add) = adds.get(&self.peer_key) {
+            self.allowed_ips.push(*ip_to_add);
+        }
+
+        if let Some(ip_to_remove) = removes.get(&self.peer_key) {
+            for i in 0..self.allowed_ips.len() {
+                if self.allowed_ips[i] == *ip_to_remove {
+                    self.allowed_ips.swap_remove(i);
+                    break;
+                }
+            }
+        }
+    }
+
     pub fn to_wg_set<'a>(&self) -> impl Iterator<Item = String> + 'a {
         [
             String::from("peer"),

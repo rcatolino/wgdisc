@@ -28,6 +28,8 @@ pub fn client_main(wgifname: &str, args: &ArgMatches) -> std::io::Result<()> {
     let msg_stream = Deserializer::from_reader(&stream).into_iter::<RecvMessage>();
 
     let mut ip_adds = HashMap::new();
+    // Pre-fill override with existing conf :
+    wireguard::set_peers_allowed_ips(wgifname, &mut ip_adds)?;
     let mut ip_removes = HashMap::new();
     for o in args.get_many::<String>("override").into_iter().flatten() {
         if let Some((pubkey, ipnet)) = o.rsplit_once('+') {

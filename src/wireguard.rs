@@ -1,8 +1,10 @@
 use crate::rpc::PeerDef;
+use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::io::Error as IoError;
 use std::io::ErrorKind;
 use std::io::Result as IoResult;
+use std::net::IpAddr;
 use std::process::{Command, Stdio};
 use std::string::ToString;
 
@@ -36,7 +38,7 @@ where
 }
 
 pub fn get_peers(ifname: &str) -> IoResult<Vec<PeerDef>> {
-    let stdout = exec("/usr/bin/wg", ["show", ifname, "dump"])?;
+    let stdout = exec(WGPATH, ["show", ifname, "dump"])?;
     Ok(stdout
         .trim_end()
         .split_terminator('\n')
@@ -46,7 +48,7 @@ pub fn get_peers(ifname: &str) -> IoResult<Vec<PeerDef>> {
 }
 
 pub fn find_interface(filter: Option<&str>) -> IoResult<String> {
-    let stdout = exec("/usr/bin/wg", ["show", "interfaces"])?;
+    let stdout = exec(WGPATH, ["show", "interfaces"])?;
     let mut interfaces = stdout.trim_end().split_terminator('\n');
 
     if let Some(ifname) = filter {
@@ -77,8 +79,31 @@ pub fn find_interface(filter: Option<&str>) -> IoResult<String> {
     }
 }
 
+pub fn set_peers_allowed_ips(
+    ifname: &str,
+    ipmap: &mut HashMap<String, (IpAddr, u8)>,
+) -> IoResult<()> {
+    let stdout = exec(WGPATH, ["show", ifname, "allowed-ips"])?;
+    for (pubkey, ip_list) in stdout
+        .split_terminator('\n')
+        .filter_map(|line| line.split_once('\t'))
+    {
+        ip_list
+            .split_terminator(' ')
+            .filter_map(|ipmask| {
+                let (ip, mask) = ipmask.rsplit_once('/')?;
+                Some((ip.parse().ok()?, mask.parse().ok()?))
+            })
+            .for_each(|ip| {
+                ipmap.insert(String::from(pubkey), ip);
+            });
+    }
+
+    Ok(())
+}
+
 pub fn delete_peer(ifname: &str, peer_key: &str) -> IoResult<()> {
-    exec("/usr/bin/wg", ["set", ifname, "peer", peer_key, "remove"])?;
+    exec(WGPATH, ["set", ifname, "peer", peer_key, "remove"])?;
     Ok(())
 }
 

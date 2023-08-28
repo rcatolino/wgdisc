@@ -29,7 +29,7 @@ pub fn client_main(wgifname: &str, args: &ArgMatches) -> std::io::Result<()> {
 
     let mut ip_adds = HashMap::new();
     let mut ip_removes = HashMap::new();
-    for o in args.get_many::<String>("override").expect("test") {
+    for o in args.get_many::<String>("override").into_iter().flatten() {
         if let Some((pubkey, ipnet)) = o.rsplit_once('+') {
             if insert_override(&mut ip_adds, pubkey, ipnet).is_none() {
                 println!(

@@ -1,3 +1,6 @@
+use nix::sys::socket::SockFlag;
+use wireguard_uapi::netlink::NetlinkRoute;
+
 use crate::rpc::PeerDef;
 use std::collections::HashMap;
 use std::ffi::OsStr;
@@ -47,13 +50,14 @@ pub fn get_peers(ifname: &str) -> IoResult<Vec<PeerDef>> {
         .collect())
 }
 
-pub fn find_interface(filter: Option<&str>) -> IoResult<String> {
-    let stdout = exec(WGPATH, ["show", "interfaces"])?;
-    let mut interfaces = stdout.trim_end().split_terminator('\n');
+pub fn find_interface(filter: Option<&str>) -> IoResult<(String, i32)> {
+
+    let mut nlroute = NetlinkRoute::new(SockFlag::empty());
+    let mut interfaces = nlroute.get_wireguard_interfaces().unwrap().into_iter();
 
     if let Some(ifname) = filter {
-        match interfaces.find(|name| name == &ifname) {
-            Some(name) => Ok(name.to_string()),
+        match interfaces.find(|(name, _)| name == &ifname) {
+            Some(interface) => Ok(interface),
             None => {
                 let msg = format!("No wireguard interface named {} found", ifname);
                 Err(IoError::new(ErrorKind::Other, msg))
@@ -75,7 +79,7 @@ pub fn find_interface(filter: Option<&str>) -> IoResult<String> {
             return Err(IoError::new(ErrorKind::Other, msg));
         }
 
-        Ok(res.to_string())
+        Ok(res)
     }
 }
 

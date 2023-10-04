@@ -92,7 +92,7 @@ fn main() {
 
 fn run_app(matches: ArgMatches) -> std::io::Result<()> {
     let filter = matches.get_one::<String>("interface");
-    let wgifname = wireguard::find_interface(filter.map(|s| s.as_str()))?;
+    let (wgifname, _) = wireguard::find_interface(filter.map(|s| s.as_str()))?;
 
     match matches.subcommand() {
         Some(("client", submatches)) => client_main(&wgifname, submatches)?,

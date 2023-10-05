@@ -1,11 +1,14 @@
 use crate::cidr;
-use crate::rpc::{MsgBuf, PeerDef, RecvMessage, SendMessage};
-use crate::wireguard;
+use crate::rpc::{MsgBuf, RecvMessage, SendMessage};
+use base64_light::base64_encode_bytes;
 use clap::ArgMatches;
 use mio::net::{TcpListener, TcpStream};
 use mio::{Events, Interest, Poll, Token};
 use nix::ifaddrs::getifaddrs;
 use serde_json::Deserializer;
+use wireguard_uapi::netlink::Result as WgResult;
+use wireguard_uapi::netlink::Error as WgError;
+use wireguard_uapi::wireguard::{WireguardDev, Peer};
 use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::io::Error as IoError;
@@ -16,12 +19,12 @@ use std::net::{IpAddr, SocketAddr};
 struct Client {
     stream: TcpStream,
     buffer: MsgBuf,
-    pubkey: String,
+    pubkey: Vec<u8>,
     addr: SocketAddr,
 }
 
 impl Client {
-    fn new_data_event(&mut self, peers: &[PeerDef]) -> IoResult<bool> {
+    fn new_data_event(&mut self, peers: &[Peer]) -> IoResult<bool> {
         let drained = self.buffer.drain(&mut self.stream)?;
         if drained == 0 {
             // Empty read, the socket must be closed
@@ -42,7 +45,7 @@ impl Client {
         Ok(false)
     }
 
-    fn handle_messages(&mut self, peers: &[PeerDef]) -> std::io::Result<usize> {
+    fn handle_messages(&mut self, peers: &[Peer]) -> std::io::Result<usize> {
         let mut msgstream = Deserializer::from_reader(&mut self.buffer).into_iter::<RecvMessage>();
         for msg in msgstream.by_ref() {
             match msg {
@@ -62,15 +65,15 @@ impl Client {
 }
 
 struct Server {
-    peers: Vec<PeerDef>,
+    peers: Vec<Peer>,
     clients: HashMap<usize, Client>,
     poll: Poll,
     count: usize,
-    wgifname: String,
+    wg: WireguardDev,
 }
 
 impl Server {
-    fn find_peer(&'_ self, addr: &SocketAddr) -> Option<&'_ PeerDef> {
+    fn find_peer(&'_ self, addr: &SocketAddr) -> Option<&'_ Peer> {
         let mut best_match = None;
         let mut best_mask = None;
         for p in self.peers.iter() {
@@ -115,8 +118,9 @@ impl Server {
     }
 
     fn update_peers(&mut self) {
-        self.peers = wireguard::get_peers(&self.wgifname)
-            .unwrap_or_else(|_| panic!("Unable to get wireguard peers for {}", &self.wgifname));
+        self.peers = self.wg.get_peers()
+            .unwrap();
+            // .unwrap_or_else(|_| panic!("Unable to get wireguard peers for {}", &self.wg.name));
     }
 }
 
@@ -137,17 +141,17 @@ pub fn getsockaddrs(ifname: &str) -> impl Iterator<Item = SocketAddr> + '_ {
         })
 }
 
-pub fn server_main(wgifname: &str, args: &ArgMatches) -> std::io::Result<()> {
+pub fn server_main(wg: WireguardDev, args: &ArgMatches) -> WgResult<()> {
     let mut listeners = Vec::<TcpListener>::new();
     let mut server = Server {
         clients: HashMap::new(),
         peers: Vec::new(),
         poll: Poll::new()?,
         count: 0,
-        wgifname: wgifname.to_string(),
+        wg,
     };
 
-    for (index, mut addr) in getsockaddrs(wgifname).enumerate() {
+    for (index, mut addr) in getsockaddrs(&server.wg.name).enumerate() {
         let filter = args.get_one::<IpAddr>("address");
         if filter.is_some() && Some(&addr.ip()) != filter {
             continue;
@@ -161,13 +165,13 @@ pub fn server_main(wgifname: &str, args: &ArgMatches) -> std::io::Result<()> {
             .register(&mut listeners[index], Token(index), Interest::READABLE)?;
         println!(
             "Using wireguard interface {} and address {:?}",
-            wgifname, addr
+            server.wg.name, addr
         );
     }
 
     if listeners.is_empty() {
-        let msg = format!("No address found for interface {}", wgifname);
-        return Err(IoError::new(ErrorKind::Other, msg));
+        let msg = format!("No address found for interface {}", server.wg.name);
+        return Err(WgError::Other(msg));
     }
 
     let mut events = Events::with_capacity(128);
@@ -200,14 +204,14 @@ pub fn server_main(wgifname: &str, args: &ArgMatches) -> std::io::Result<()> {
                     let should_close = client.new_data_event(&server.peers)?;
                     if event.is_read_closed() || should_close {
                         let key = client.pubkey.clone();
-                        println!("Closing client {}", client.pubkey);
+                        println!("Closing client {}", base64_encode_bytes(client.pubkey.as_slice()));
                         server.poll.registry().deregister(&mut client.stream)?;
                         server.clients.remove(&token);
                         for c in server.clients.values() {
                             serde_json::to_writer(
                                 &c.stream,
-                                &SendMessage::DeletePeer(key.as_str()),
-                            )?
+                                &SendMessage::DeletePeer(key.as_slice()),
+                            ).map_err(|e| IoError::from(e))?
                         }
                     }
                 }

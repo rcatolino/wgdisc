@@ -2,12 +2,12 @@ mod cidr;
 mod client;
 mod rpc;
 mod server;
-mod wireguard;
 
 use clap::{value_parser, Arg, ArgAction, ArgMatches, Command};
 
 use client::client_main;
 use server::server_main;
+use wireguard_uapi::wireguard::WireguardDev;
 use std::net::IpAddr;
 
 fn main() {
@@ -86,17 +86,17 @@ fn main() {
         .get_matches();
 
     if let Err(e) = run_app(matches) {
-        println!("Error : {}", e);
+        println!("Error : {:?}", e);
     }
 }
 
-fn run_app(matches: ArgMatches) -> std::io::Result<()> {
+fn run_app(matches: ArgMatches) -> wireguard_uapi::netlink::Result<()> {
     let filter = matches.get_one::<String>("interface");
-    let (wgifname, _) = wireguard::find_interface(filter.map(|s| s.as_str()))?;
+    let wgdevice = WireguardDev::new(filter.map(|f| f.as_str()))?;
 
     match matches.subcommand() {
-        Some(("client", submatches)) => client_main(&wgifname, submatches)?,
-        Some(("server", submatches)) => server_main(&wgifname, submatches)?,
+        Some(("client", submatches)) => client_main(wgdevice, submatches)?,
+        Some(("server", submatches)) => server_main(wgdevice, submatches)?,
         _ => unreachable!("Unknown or missing subcommand"),
     };
 

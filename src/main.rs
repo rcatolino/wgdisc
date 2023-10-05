@@ -7,8 +7,8 @@ use clap::{value_parser, Arg, ArgAction, ArgMatches, Command};
 
 use client::client_main;
 use server::server_main;
-use wireguard_uapi::wireguard::WireguardDev;
 use std::net::IpAddr;
+use wireguard_uapi::wireguard::WireguardDev;
 
 fn main() {
     let matches = Command::new("wgdisc")

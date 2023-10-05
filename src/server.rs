@@ -4,17 +4,25 @@ use base64_light::base64_encode_bytes;
 use clap::ArgMatches;
 use mio::net::{TcpListener, TcpStream};
 use mio::{Events, Interest, Poll, Token};
+use nix::errno;
 use nix::ifaddrs::getifaddrs;
+use nix::libc::EAGAIN;
+use nix::sys::socket::SockFlag;
 use serde_json::Deserializer;
-use wireguard_uapi::netlink::Result as WgResult;
-use wireguard_uapi::netlink::Error as WgError;
-use wireguard_uapi::wireguard::{WireguardDev, Peer};
+use std::cell::Ref;
 use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::io::Error as IoError;
 use std::io::ErrorKind;
 use std::io::Result as IoResult;
 use std::net::{IpAddr, SocketAddr};
+use std::os::fd::{AsRawFd, OwnedFd};
+use wireguard_uapi::netlink::Error as WgError;
+use wireguard_uapi::netlink::{
+    wgdevice_attribute, wgpeer_attribute, AttributeIterator, AttributeType, MsgBuffer,
+    Result as WgResult, SubHeader,
+};
+use wireguard_uapi::wireguard::{Peer, WireguardDev};
 
 struct Client {
     stream: TcpStream,
@@ -88,6 +96,58 @@ impl Server {
         best_match
     }
 
+    fn peerkey_from_attr<'a, F: AsRawFd>(
+        &self,
+        attributes: AttributeIterator<'a, F>,
+    ) -> Option<Ref<'a, [u8]>> {
+        let mut key = None;
+        let mut ifindex = None;
+        for a in attributes {
+            match a.attribute_type {
+                AttributeType::Nested(wgdevice_attribute::PEER) => {
+                    key = a.attributes().find_map(|inner| match inner.attribute_type {
+                        AttributeType::Raw(wgpeer_attribute::PUBLIC_KEY) => inner.get_bytes(),
+                        _ => None,
+                    });
+                }
+                AttributeType::Raw(wgdevice_attribute::IFINDEX) => {
+                    ifindex = a.get::<u32>();
+                }
+                _ => (),
+            }
+        }
+
+        if Some(self.wg.index as u32) == ifindex {
+            key
+        } else {
+            // This event isn't for the interface we are monitoring
+            None
+        }
+    }
+
+    fn peer_from_attr<F: AsRawFd>(&self, attributes: AttributeIterator<'_, F>) -> Option<Peer> {
+        let mut peer = None;
+        let mut ifindex = None;
+        for a in attributes {
+            match a.attribute_type {
+                AttributeType::Nested(wgdevice_attribute::PEER) => {
+                    peer = Peer::new(a.attributes());
+                }
+                AttributeType::Raw(wgdevice_attribute::IFINDEX) => {
+                    ifindex = a.get::<u32>();
+                }
+                _ => (),
+            }
+        }
+
+        if Some(self.wg.index as u32) == ifindex {
+            peer
+        } else {
+            // This event isn't for the interface we are monitoring
+            None
+        }
+    }
+
     // Returns Ok(None) if no peer with matching ip was found
     fn add_client(&mut self, mut stream: TcpStream, addr: SocketAddr) -> IoResult<Option<()>> {
         self.update_peers();
@@ -118,9 +178,51 @@ impl Server {
     }
 
     fn update_peers(&mut self) {
-        self.peers = self.wg.get_peers()
-            .unwrap();
-            // .unwrap_or_else(|_| panic!("Unable to get wireguard peers for {}", &self.wg.name));
+        self.peers = self.wg.get_peers().unwrap();
+        // .unwrap_or_else(|_| panic!("Unable to get wireguard peers for {}", &self.wg.name));
+    }
+
+    fn recv_notifications(&mut self, buffer: &mut MsgBuffer<OwnedFd>) -> WgResult<()> {
+        for mb_msg in buffer.recv_msgs() {
+            let msg = match mb_msg {
+                Err(WgError::OsError(no)) if no == errno::from_i32(EAGAIN) => break,
+                Ok(msg) => msg,
+                Err(e) => return Err(e),
+            };
+
+            match msg.sub_header {
+                SubHeader::Generic(genheader) if genheader.cmd == 2 => {
+                    println!("Set peer endpoint notification");
+                    if let Some(peer) = self.peer_from_attr(msg.attributes()) {
+                        for c in self.clients.values() {
+                            serde_json::to_writer(&c.stream, &SendMessage::AddPeer(&peer))
+                                .map_err(|e| IoError::from(e))?;
+                        }
+                    }
+                }
+                SubHeader::Generic(genheader) if genheader.cmd == 3 => {
+                    println!("Remove peer notification");
+                    if let Some(key) = self.peerkey_from_attr(msg.attributes()) {
+                        for c in self.clients.values() {
+                            serde_json::to_writer(&c.stream, &SendMessage::DeletePeer(&key))
+                                .map_err(|e| IoError::from(e))?;
+                        }
+                    }
+                }
+                SubHeader::Generic(genheader) if genheader.cmd == 4 => {
+                    println!("Set peer notification");
+                    if let Some(peer) = self.peer_from_attr(msg.attributes()) {
+                        for c in self.clients.values() {
+                            serde_json::to_writer(&c.stream, &SendMessage::AddPeer(&peer))
+                                .map_err(|e| IoError::from(e))?;
+                        }
+                    }
+                }
+                _ => println!("Unknwon wireguard notification"),
+            }
+        }
+
+        Ok(())
     }
 }
 
@@ -174,6 +276,12 @@ pub fn server_main(wg: WireguardDev, args: &ArgMatches) -> WgResult<()> {
         return Err(WgError::Other(msg));
     }
 
+    let mut nlstream = server.wg.subscribe(SockFlag::SOCK_NONBLOCK)?;
+    server
+        .poll
+        .registry()
+        .register(&mut nlstream, Token(listeners.len()), Interest::READABLE)?;
+
     let mut events = Events::with_capacity(128);
     server.count = listeners.len() + 1;
     loop {
@@ -192,8 +300,10 @@ pub fn server_main(wg: WireguardDev, args: &ArgMatches) -> WgResult<()> {
                         );
                     }
                 }
-                // We start numbering clients from listeners.len() + 1
-                Ordering::Equal => unreachable!(),
+                Ordering::Equal => {
+                    // Netlink event
+                    server.recv_notifications(&mut nlstream)?;
+                }
                 Ordering::Greater => {
                     // Client event
                     let client = server
@@ -204,14 +314,18 @@ pub fn server_main(wg: WireguardDev, args: &ArgMatches) -> WgResult<()> {
                     let should_close = client.new_data_event(&server.peers)?;
                     if event.is_read_closed() || should_close {
                         let key = client.pubkey.clone();
-                        println!("Closing client {}", base64_encode_bytes(client.pubkey.as_slice()));
+                        println!(
+                            "Closing client {}",
+                            base64_encode_bytes(client.pubkey.as_slice())
+                        );
                         server.poll.registry().deregister(&mut client.stream)?;
                         server.clients.remove(&token);
                         for c in server.clients.values() {
                             serde_json::to_writer(
                                 &c.stream,
                                 &SendMessage::DeletePeer(key.as_slice()),
-                            ).map_err(|e| IoError::from(e))?
+                            )
+                            .map_err(|e| IoError::from(e))?
                         }
                     }
                 }

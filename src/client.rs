@@ -1,12 +1,12 @@
 use crate::rpc::{RecvMessage, SendMessage};
-use wireguard_uapi::wireguard::{Peer, WireguardDev};
-use wireguard_uapi::netlink::Result as WgResult;
+use base64_light::base64_decode;
 use clap::ArgMatches;
 use serde_json::Deserializer;
 use std::collections::HashMap;
-use std::net::{IpAddr, TcpStream};
 use std::io::Error as IoError;
-use base64_light::base64_decode;
+use std::net::{IpAddr, TcpStream};
+use wireguard_uapi::netlink::Result as WgResult;
+use wireguard_uapi::wireguard::{Peer, WireguardDev};
 
 fn insert_override(
     ip_adds: &mut HashMap<Vec<u8>, (IpAddr, u8)>,
@@ -86,12 +86,12 @@ pub fn client_main(mut wg: WireguardDev, args: &ArgMatches) -> WgResult<()> {
                 filter_allowed_ips(&mut peer, &ip_adds, &ip_removes);
                 wg.set_peers([&peer])?;
             }
-            RecvMessage::AddPeers(mut peer_list) => wg.set_peers(
-                peer_list.iter_mut().map(|p| {
+            RecvMessage::AddPeers(mut peer_list) => {
+                wg.set_peers(peer_list.iter_mut().map(|p| {
                     filter_allowed_ips(p, &ip_adds, &ip_removes);
                     &*p
-                }),
-            )?,
+                }))?
+            }
             RecvMessage::DeletePeer(key) => wg.remove_peer(&key)?,
             _ => println!("Unsupported message"),
         };

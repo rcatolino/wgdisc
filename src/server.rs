@@ -8,13 +8,14 @@ use nix::errno;
 use nix::ifaddrs::getifaddrs;
 use nix::libc::EAGAIN;
 use nix::sys::socket::SockFlag;
+use serde::Serialize;
 use serde_json::Deserializer;
 use std::cell::Ref;
 use std::cmp::Ordering;
 use std::collections::HashMap;
-use std::io::Error as IoError;
 use std::io::ErrorKind;
 use std::io::Result as IoResult;
+use std::io::{Error as IoError, Write};
 use std::net::{IpAddr, SocketAddr};
 use std::os::fd::{AsRawFd, OwnedFd};
 use wireguard_uapi::netlink::Error as WgError;
@@ -160,10 +161,7 @@ impl Server {
         };
 
         // Update each pre-existing clients to tell them about the new peer
-        for c in self.clients.values() {
-            serde_json::to_writer(&c.stream, &SendMessage::AddPeer(peer))?
-        }
-
+        self.send_all_clients(&SendMessage::AddPeer(peer))?;
         self.clients.insert(self.count, c);
         self.count += 1;
         Ok(Some(()))
@@ -172,6 +170,16 @@ impl Server {
     fn update_peers(&mut self) {
         self.peers = self.wg.get_peers().unwrap();
         // .unwrap_or_else(|_| panic!("Unable to get wireguard peers for {}", &self.wg.name));
+    }
+
+    fn send_all_clients<T: ?Sized + Serialize>(&self, msg: &T) -> IoResult<()> {
+        for c in self.clients.values() {
+            let mut stream = &c.stream;
+            serde_json::to_writer(stream, msg).map_err(IoError::from)?;
+            stream.flush()?;
+        }
+
+        Ok(())
     }
 
     fn recv_notifications(&mut self, buffer: &mut MsgBuffer<OwnedFd>) -> WgResult<()> {
@@ -184,30 +192,21 @@ impl Server {
 
             match msg.sub_header {
                 SubHeader::Generic(genheader) if genheader.cmd == 2 => {
-                    println!("Set peer endpoint notification");
                     if let Some(peer) = self.peer_from_attr(msg.attributes()) {
-                        for c in self.clients.values() {
-                            serde_json::to_writer(&c.stream, &SendMessage::AddPeer(&peer))
-                                .map_err(|e| IoError::from(e))?;
-                        }
+                        println!("Set peer endpoint notification");
+                        self.send_all_clients(&SendMessage::AddPeer(&peer))?;
                     }
                 }
                 SubHeader::Generic(genheader) if genheader.cmd == 3 => {
-                    println!("Remove peer notification");
                     if let Some(key) = self.peerkey_from_attr(msg.attributes()) {
-                        for c in self.clients.values() {
-                            serde_json::to_writer(&c.stream, &SendMessage::DeletePeer(&key))
-                                .map_err(|e| IoError::from(e))?;
-                        }
+                        println!("Remove peer notification");
+                        self.send_all_clients(&SendMessage::DeletePeer(&key))?;
                     }
                 }
                 SubHeader::Generic(genheader) if genheader.cmd == 4 => {
-                    println!("Set peer notification");
                     if let Some(peer) = self.peer_from_attr(msg.attributes()) {
-                        for c in self.clients.values() {
-                            serde_json::to_writer(&c.stream, &SendMessage::AddPeer(&peer))
-                                .map_err(|e| IoError::from(e))?;
-                        }
+                        println!("Set peer notification");
+                        self.send_all_clients(&SendMessage::AddPeer(&peer))?;
                     }
                 }
                 _ => println!("Unknwon wireguard notification"),
@@ -321,13 +320,7 @@ pub fn server_main(wg: WireguardDev, args: &ArgMatches) -> WgResult<()> {
                         );
                         server.poll.registry().deregister(&mut client.stream)?;
                         server.clients.remove(&token);
-                        for c in server.clients.values() {
-                            serde_json::to_writer(
-                                &c.stream,
-                                &SendMessage::DeletePeer(key.as_slice()),
-                            )
-                            .map_err(|e| IoError::from(e))?
-                        }
+                        server.send_all_clients(&SendMessage::DeletePeer(key.as_slice()))?;
                     }
                 }
             }

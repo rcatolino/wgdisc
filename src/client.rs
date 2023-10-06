@@ -46,7 +46,7 @@ pub fn client_main(mut wg: WireguardDev, args: &ArgMatches) -> WgResult<()> {
     ))?;
 
     // We've just started, ask for all existing peers :
-    serde_json::to_writer(&stream, &SendMessage::GetPeerList).map_err(|e| IoError::from(e))?;
+    serde_json::to_writer(&stream, &SendMessage::GetPeerList).map_err(IoError::from)?;
     let msg_stream = Deserializer::from_reader(&stream).into_iter::<RecvMessage>();
 
     let mut ip_adds = HashMap::new();
@@ -81,7 +81,7 @@ pub fn client_main(mut wg: WireguardDev, args: &ArgMatches) -> WgResult<()> {
 
     // Listen for incoming messages
     for msg in msg_stream {
-        match msg.map_err(|e| IoError::from(e))? {
+        match msg.map_err(IoError::from)? {
             RecvMessage::AddPeer(mut peer) => {
                 filter_allowed_ips(&mut peer, &ip_adds, &ip_removes);
                 wg.set_peers([&peer])?;

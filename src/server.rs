@@ -38,22 +38,14 @@ impl Client {
             // Empty read, the socket must be closed
             return Ok(true);
         } else {
-            match self.handle_messages(peers) {
-                Ok(consumed) => self.buffer.consume(consumed),
-                Err(e) => {
-                    println!(
-                        "Error deserializing from client {} : {}. Terminating client.",
-                        self.addr, e
-                    );
-                    return Ok(true); // Invalid/Corrupted message => bad client
-                }
-            }
+            let consumed = self.handle_messages(peers)?;
+            self.buffer.consume(consumed);
         }
 
         Ok(false)
     }
 
-    fn handle_messages(&mut self, peers: &[Peer]) -> std::io::Result<usize> {
+    fn handle_messages(&mut self, peers: &[Peer]) -> IoResult<usize> {
         let mut msgstream = Deserializer::from_reader(&mut self.buffer).into_iter::<RecvMessage>();
         for msg in msgstream.by_ref() {
             match msg {
@@ -311,7 +303,16 @@ pub fn server_main(wg: WireguardDev, args: &ArgMatches) -> WgResult<()> {
                         .get_mut(&token)
                         .expect("Polled event from non existing client !");
 
-                    let should_close = client.new_data_event(&server.peers)?;
+                    let should_close = match client.new_data_event(&server.peers) {
+                        Ok(should_close) => should_close,
+                        Err(e) => {
+                            println!(
+                                "Error deserializing from client {} : {}. Terminating client.",
+                                client.addr, e
+                            );
+                            true
+                        }
+                    };
                     if event.is_read_closed() || should_close {
                         let key = client.pubkey.clone();
                         println!(

@@ -66,7 +66,6 @@ impl Client {
 }
 
 struct Server {
-    peers: Vec<Peer>,
     clients: HashMap<usize, Client>,
     poll: Poll,
     count: usize,
@@ -74,10 +73,10 @@ struct Server {
 }
 
 impl Server {
-    fn find_peer(&'_ self, addr: &SocketAddr) -> Option<&'_ Peer> {
+    fn find_peer<'a>(peers: &'a [Peer], addr: &SocketAddr) -> Option<&'a Peer> {
         let mut best_match = None;
         let mut best_mask = None;
-        for p in self.peers.iter() {
+        for p in peers.iter() {
             for (a, mask) in p.allowed_ips.iter() {
                 if cidr::ip_in_net(&addr.ip(), a, *mask) && best_mask.unwrap_or(0) <= *mask {
                     best_mask = Some(*mask);
@@ -142,9 +141,9 @@ impl Server {
     }
 
     // Returns Ok(None) if no peer with matching ip was found
-    fn add_client(&mut self, mut stream: TcpStream, addr: SocketAddr) -> IoResult<Option<()>> {
-        self.update_peers();
-        let peer = match self.find_peer(&addr) {
+    fn add_client(&mut self, mut stream: TcpStream, addr: SocketAddr) -> WgResult<Option<()>> {
+        let peers = self.wg.get_peers()?;
+        let peer = match Self::find_peer(&peers, &addr) {
             Some(peer) => peer,
             None => return Ok(None),
         };
@@ -161,15 +160,9 @@ impl Server {
         };
 
         // Update each pre-existing clients to tell them about the new peer
-        self.send_all_clients(&SendMessage::AddPeer(peer))?;
         self.clients.insert(self.count, c);
         self.count += 1;
         Ok(Some(()))
-    }
-
-    fn update_peers(&mut self) {
-        self.peers = self.wg.get_peers().unwrap();
-        // .unwrap_or_else(|_| panic!("Unable to get wireguard peers for {}", &self.wg.name));
     }
 
     fn send_all_clients<T: ?Sized + Serialize>(&self, msg: &T) -> IoResult<()> {
@@ -185,6 +178,7 @@ impl Server {
     fn recv_notifications(&mut self, buffer: &mut MsgBuffer<OwnedFd>) -> WgResult<()> {
         for mb_msg in buffer.recv_msgs() {
             let msg = match mb_msg {
+                // EAGAIN indicates that there is noting more to read from netlink
                 Err(WgError::OsError(no)) if no == errno::from_i32(EAGAIN) => break,
                 Ok(msg) => msg,
                 Err(e) => return Err(e),
@@ -238,7 +232,6 @@ pub fn server_main(wg: WireguardDev, args: &ArgMatches) -> WgResult<()> {
     let mut listeners = Vec::<TcpListener>::new();
     let mut server = Server {
         clients: HashMap::new(),
-        peers: Vec::new(),
         poll: Poll::new()?,
         count: 0,
         wg,
@@ -302,7 +295,8 @@ pub fn server_main(wg: WireguardDev, args: &ArgMatches) -> WgResult<()> {
                         .get_mut(&token)
                         .expect("Polled event from non existing client !");
 
-                    let should_close = match client.new_data_event(&server.peers) {
+                    let peers = server.wg.get_peers()?;
+                    let should_close = match client.new_data_event(&peers) {
                         Ok(should_close) => should_close,
                         Err(e) => {
                             println!(
@@ -313,14 +307,12 @@ pub fn server_main(wg: WireguardDev, args: &ArgMatches) -> WgResult<()> {
                         }
                     };
                     if event.is_read_closed() || should_close {
-                        let key = client.pubkey.clone();
                         println!(
                             "Closing client {}",
                             base64_encode_bytes(client.pubkey.as_slice())
                         );
                         server.poll.registry().deregister(&mut client.stream)?;
                         server.clients.remove(&token);
-                        server.send_all_clients(&SendMessage::DeletePeer(key.as_slice()))?;
                     }
                 }
             }

@@ -7,10 +7,10 @@ use clap::{value_parser, Arg, ArgAction, ArgMatches, Command};
 
 use client::client_main;
 use server::server_main;
-use std::net::IpAddr;
+use std::{net::IpAddr, process::ExitCode};
 use wireguard_uapi::wireguard::WireguardDev;
 
-fn main() {
+fn main() -> ExitCode {
     let matches = Command::new("wgdisc")
         .override_usage("wgdisc [interface] subcommand [options]")
         .arg(
@@ -88,6 +88,9 @@ fn main() {
     if let Err(e) = run_app(matches) {
         println!("Error : {:?}", e);
     }
+
+    // There's no reason to exit with success, it's always a failure
+    ExitCode::FAILURE
 }
 
 fn run_app(matches: ArgMatches) -> wireguard_uapi::netlink::Result<()> {

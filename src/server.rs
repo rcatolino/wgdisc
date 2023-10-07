@@ -50,6 +50,9 @@ impl Client {
         let mut msgstream = Deserializer::from_reader(&mut self.buffer).into_iter::<RecvMessage>();
         for msg in msgstream.by_ref() {
             match msg {
+                Ok(RecvMessage::Ping) => {
+                    serde_json::to_writer(&mut self.stream, &SendMessage::Ping)?
+                }
                 Ok(RecvMessage::GetPeerList) => {
                     // println!("Received message GetPeerList");
                     serde_json::to_writer(&mut self.stream, &SendMessage::AddPeers(peers))?

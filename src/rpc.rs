@@ -7,6 +7,7 @@ use wireguard_uapi::wireguard::Peer;
 // in the serializing case
 #[derive(Serialize, Debug)]
 pub enum SendMessage<'a> {
+    Ping,
     AddPeer(&'a Peer),
     DeletePeer(&'a [u8]),
     AddPeers(&'a [Peer]),
@@ -15,6 +16,7 @@ pub enum SendMessage<'a> {
 
 #[derive(Deserialize, Debug)]
 pub enum RecvMessage {
+    Ping,
     AddPeer(Peer),
     DeletePeer(Vec<u8>),
     AddPeers(Vec<Peer>),

@@ -51,11 +51,12 @@ impl Client {
         for msg in msgstream.by_ref() {
             match msg {
                 Ok(RecvMessage::Ping) => {
-                    serde_json::to_writer(&mut self.stream, &SendMessage::Ping)?
+                    serde_json::to_writer(&mut self.stream, &SendMessage::Ping)?;
+                    self.stream.flush()?;
                 }
                 Ok(RecvMessage::GetPeerList) => {
-                    // println!("Received message GetPeerList");
-                    serde_json::to_writer(&mut self.stream, &SendMessage::AddPeers(peers))?
+                    serde_json::to_writer(&mut self.stream, &SendMessage::AddPeers(peers))?;
+                    self.stream.flush()?;
                 }
                 Err(e) if e.is_eof() => (), // This just means we need to wait
                 // for more data to deserialize

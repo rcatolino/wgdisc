@@ -17,10 +17,12 @@ struct Client {
     wg: WireguardDev,
     stream: TcpStream,
     is_waiting_ping: bool,
+    start_peers: Vec<Peer>,
 }
 
 impl Client {
-    fn new(wg: WireguardDev, args: &ArgMatches) -> WgResult<Client> {
+    fn new(mut wg: WireguardDev, args: &ArgMatches) -> WgResult<Client> {
+        let start_peers = wg.get_peers()?;
         let stream = TcpStream::connect((
             args.get_one::<String>("address")
                 .expect("required")
@@ -68,6 +70,7 @@ impl Client {
             wg,
             stream,
             is_waiting_ping: false,
+            start_peers,
         })
     }
 
@@ -111,7 +114,6 @@ impl Client {
                     self.wg.remove_peer(&key)?
                 }
                 RecvMessage::Ping => {
-                    println!("Received ping back from server");
                     self.is_waiting_ping = false;
                 }
                 _ => println!("Unsupported message"),
@@ -140,6 +142,15 @@ impl Client {
         let (ip, mask) = ipnet.rsplit_once('/')?;
         ip_adds.insert(pubkey, (ip.parse().ok()?, mask.parse().ok()?));
         Some(())
+    }
+}
+
+impl Drop for Client {
+    fn drop(&mut self) {
+        // Restore initial state :
+        if let Err(e) = self.wg.set_peers(self.start_peers.iter()) {
+            println!("Warning, couldn't restore peer state on exit : {:?}", e);
+        }
     }
 }
 

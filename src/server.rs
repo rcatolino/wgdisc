@@ -10,7 +10,6 @@ use nix::libc::EAGAIN;
 use nix::sys::socket::SockFlag;
 use serde::Serialize;
 use serde_json::Deserializer;
-use std::cell::Ref;
 use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::io::ErrorKind;
@@ -20,7 +19,7 @@ use std::net::{IpAddr, SocketAddr};
 use std::os::fd::{AsRawFd, OwnedFd};
 use wireguard_uapi::netlink::Error as WgError;
 use wireguard_uapi::netlink::{
-    wgdevice_attribute, wgpeer_attribute, AttributeIterator, AttributeType, MsgBuffer,
+    wgdevice_attribute, AttributeIterator, AttributeType, MsgBuffer,
     Result as WgResult, SubHeader,
 };
 use wireguard_uapi::wireguard::{Peer, WireguardDev};
@@ -92,35 +91,6 @@ impl Server {
         best_match
     }
 
-    fn peerkey_from_attr<'a, F: AsRawFd>(
-        &self,
-        attributes: AttributeIterator<'a, F>,
-    ) -> Option<Ref<'a, [u8]>> {
-        let mut key = None;
-        let mut ifindex = None;
-        for a in attributes {
-            match a.attribute_type {
-                AttributeType::Nested(wgdevice_attribute::PEER) => {
-                    key = a.attributes().find_map(|inner| match inner.attribute_type {
-                        AttributeType::Raw(wgpeer_attribute::PUBLIC_KEY) => inner.get_bytes(),
-                        _ => None,
-                    });
-                }
-                AttributeType::Raw(wgdevice_attribute::IFINDEX) => {
-                    ifindex = a.get::<u32>();
-                }
-                _ => (),
-            }
-        }
-
-        if Some(self.wg.index as u32) == ifindex {
-            key
-        } else {
-            // This event isn't for the interface we are monitoring
-            None
-        }
-    }
-
     fn peer_from_attr<F: AsRawFd>(&self, attributes: AttributeIterator<'_, F>) -> Option<Peer> {
         let mut peer = None;
         let mut ifindex = None;
@@ -189,18 +159,21 @@ impl Server {
             };
 
             match msg.sub_header {
+                // CMD 2 : Changed endpoint
                 SubHeader::Generic(genheader) if genheader.cmd == 2 => {
                     if let Some(peer) = self.peer_from_attr(msg.attributes()) {
                         println!("Set peer endpoint notification");
                         self.send_all_clients(&SendMessage::AddPeer(&peer))?;
                     }
                 }
+                // CMD 3 : Removed peer
                 SubHeader::Generic(genheader) if genheader.cmd == 3 => {
-                    if let Some(key) = self.peerkey_from_attr(msg.attributes()) {
+                    if let Some(peer) = self.peer_from_attr(msg.attributes()) {
                         println!("Remove peer notification");
-                        self.send_all_clients(&SendMessage::DeletePeer(&key))?;
+                        self.send_all_clients(&SendMessage::DeletePeer(&peer.peer_key))?;
                     }
                 }
+                // CMD 4 : Changed peer
                 SubHeader::Generic(genheader) if genheader.cmd == 4 => {
                     if let Some(peer) = self.peer_from_attr(msg.attributes()) {
                         println!("Set peer notification");

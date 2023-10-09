@@ -22,7 +22,7 @@ lto = "thin"
 overflow-checks = true
 
 [dependencies]
-wireguard-uapi = { version = "0.1", git = "https://github.com/rcatolino/wireguard-uapi", features = ["serde", "mio"] }
+wireguard-uapi = { version = "0.1", git = "https://github.com/rcatolino/wireguard-uapi", features = ["serde", "mio", "display"] }
 base64_light = { version = "=0.1.5" }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = { version = "1.0" }

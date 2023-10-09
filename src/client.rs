@@ -1,5 +1,5 @@
 use crate::rpc::{RecvMessage, SendMessage};
-use base64_light::base64_decode;
+use base64_light::{base64_decode, base64_encode_bytes};
 use clap::ArgMatches;
 use serde_json::Deserializer;
 use std::collections::HashMap;
@@ -99,7 +99,7 @@ impl Client {
             match msg {
                 RecvMessage::AddPeer(mut peer) => {
                     Self::filter_allowed_ips(&mut peer, &self.ip_adds, &self.ip_removes);
-                    println!("Updating peer {:?}", peer);
+                    println!("Updating peer {}", peer);
                     self.wg.set_peers([&peer])?;
                 }
                 RecvMessage::AddPeers(mut peer_list) => {
@@ -110,7 +110,7 @@ impl Client {
                     }))?
                 }
                 RecvMessage::DeletePeer(key) => {
-                    println!("Removing peer {:?}", key);
+                    println!("Removing peer {}", base64_encode_bytes(key.as_slice()));
                     self.wg.remove_peer(&key)?
                 }
                 RecvMessage::Ping => {

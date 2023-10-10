@@ -8,7 +8,6 @@ use clap::{value_parser, Arg, ArgAction, ArgMatches, Command};
 use client::client_main;
 use server::server_main;
 use std::{net::IpAddr, process::ExitCode};
-use wireguard_uapi::wireguard::WireguardDev;
 
 fn main() -> ExitCode {
     let matches = Command::new("wgdisc")
@@ -95,11 +94,10 @@ fn main() -> ExitCode {
 
 fn run_app(matches: ArgMatches) -> wireguard_uapi::netlink::Result<()> {
     let filter = matches.get_one::<String>("interface");
-    let wgdevice = WireguardDev::new(filter.map(|f| f.as_str()))?;
 
     match matches.subcommand() {
-        Some(("client", submatches)) => client_main(wgdevice, submatches)?,
-        Some(("server", submatches)) => server_main(wgdevice, submatches)?,
+        Some(("client", submatches)) => client_main(filter, submatches)?,
+        Some(("server", submatches)) => server_main(filter, submatches)?,
         _ => unreachable!("Unknown or missing subcommand"),
     };
 

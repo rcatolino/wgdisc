@@ -154,7 +154,8 @@ impl Drop for Client {
     }
 }
 
-pub fn client_main(wg: WireguardDev, args: &ArgMatches) -> WgResult<()> {
+pub fn client_main(filter: Option<&String>, args: &ArgMatches) -> WgResult<()> {
+    let wg = WireguardDev::new(filter.map(|f| f.as_str()))?;
     let mut c = Client::new(wg, args)?;
     loop {
         if c.handle_messages()? {

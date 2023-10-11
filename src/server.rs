@@ -3,7 +3,7 @@ use crate::rpc::{MsgBuf, RecvMessage, SendMessage};
 use base64_light::base64_encode_bytes;
 use clap::ArgMatches;
 use mio::net::{TcpListener, TcpStream};
-use mio::{Events, Interest, Poll, Registry, Token};
+use mio::{Events, Interest, Poll, Token};
 use nix::errno;
 use nix::ifaddrs::getifaddrs;
 use nix::libc::EAGAIN;
@@ -14,12 +14,13 @@ use std::collections::HashMap;
 use std::io::ErrorKind;
 use std::io::Result as IoResult;
 use std::io::{Error as IoError, Write};
-use std::net::{IpAddr, SocketAddr};
+use std::net::{IpAddr, Shutdown, SocketAddr};
 use std::os::fd::{AsRawFd, OwnedFd};
-use wireguard_uapi::netlink::{Error as WgError, NetlinkRoute};
+use std::time::Duration;
 use wireguard_uapi::netlink::{
     wgdevice_attribute, AttributeIterator, AttributeType, MsgBuffer, Result as WgResult, SubHeader,
 };
+use wireguard_uapi::netlink::{Error as WgError, NetlinkRoute};
 use wireguard_uapi::wireguard::{Peer, WireguardDev};
 
 struct Client {
@@ -78,6 +79,9 @@ struct Server {
     count: usize,
     nltok: usize,
     wgdata: Option<WireguardData>,
+    wgname_filter: Option<String>,
+    ip_filter: Option<IpAddr>,
+    listen_port: u16,
 }
 
 impl Server {
@@ -96,7 +100,11 @@ impl Server {
         best_match
     }
 
-    fn peer_from_attr<F: AsRawFd>(&self, wgindex: i32, attributes: AttributeIterator<'_, F>) -> Option<Peer> {
+    fn peer_from_attr<F: AsRawFd>(
+        &self,
+        wgindex: i32,
+        attributes: AttributeIterator<'_, F>,
+    ) -> Option<Peer> {
         let mut peer = None;
         let mut ifindex = None;
         for a in attributes {
@@ -121,14 +129,20 @@ impl Server {
 
     // Returns Ok(None) if no peer with matching ip was found
     fn add_client(&mut self, token: usize) -> WgResult<()> {
-        let wgdata = self.wgdata.as_mut().expect("Error, received tcp event, but no wireguard listener is configured.");
-        let (mut stream, addr) = wgdata.listeners[token-1].accept()?;
+        let wgdata = self
+            .wgdata
+            .as_mut()
+            .expect("Error, received tcp event, but no wireguard listener is configured.");
+        let (mut stream, addr) = wgdata.listeners[token - 1].accept()?;
         println!("New client with address {}", addr);
         let peers = wgdata.wg.get_peers()?;
         let peer = match Self::find_peer(&peers, &addr) {
             Some(peer) => peer,
             None => {
-                println!("No client found with allowed-ip matching address {}", addr.ip());
+                println!(
+                    "No client found with allowed-ip matching address {}",
+                    addr.ip()
+                );
                 return Ok(());
             }
         };
@@ -162,20 +176,42 @@ impl Server {
 
     fn link_change(&mut self, buffer: &mut MsgBuffer<OwnedFd>) -> WgResult<()> {
         for mb_msg in buffer.iter_links() {
-            let msg = match mb_msg {
+            match mb_msg {
                 // EAGAIN indicates that there is noting more to read from netlink
                 Err(WgError::OsError(no)) if no == errno::from_i32(EAGAIN) => break,
-                Ok(msg) => msg,
+                Ok((16, ifinfo)) => {
+                    if self.wgdata.is_some() {
+                        println!("RTM_NEWLINK event ignored because we already have a device");
+                    } else {
+                        // self.newlink_event(ifinfo)
+                        println!("RTM_NEWLINK event {:?}", ifinfo);
+                        // TODO: optionally use ifinfo to help wireguard setup
+                        self.try_setup_wireguard()?;
+                    }
+                }
+                Ok((17, ifinfo)) => {
+                    if let Some(ref wgdata) = self.wgdata {
+                        println!("RTM_DELLINK event, {:?}", ifinfo);
+                        if wgdata.wg.index == ifinfo.index {
+                            self.remove_wireguard()?;
+                        }
+                    }
+                }
+                Ok((msgtype, ifinfo)) => {
+                    println!("Warning, unsupported link event {} : {:?}", msgtype, ifinfo);
+                }
                 Err(e) => return Err(e),
-            };
-            println!("New link event : {:?}", msg);
+            }
         }
 
         Ok(())
     }
 
     fn recv_notifications(&mut self) -> WgResult<()> {
-        let wgdata = self.wgdata.as_ref().expect("Error, received wg netlink event, but no wireguard interface is configured.");
+        let wgdata = self
+            .wgdata
+            .as_ref()
+            .expect("Error, received wg netlink event, but no wireguard interface is configured.");
         for mb_msg in wgdata.nlstream.recv_msgs() {
             let msg = match mb_msg {
                 // EAGAIN indicates that there is noting more to read from netlink
@@ -212,6 +248,106 @@ impl Server {
 
         Ok(())
     }
+
+    fn remove_wireguard(&mut self) -> WgResult<()> {
+        let wgdata = self
+            .wgdata
+            .as_mut()
+            .expect("Error, tried to remove inexistant wireguard device");
+        // Remove nl event stream
+        self.poll.registry().deregister(&mut wgdata.nlstream)?;
+        // Remove all clients
+        for c in self.clients.values_mut() {
+            c.stream.shutdown(Shutdown::Both)?;
+            self.poll.registry().deregister(&mut c.stream)?;
+        }
+
+        self.clients.clear();
+        // Remove all listeners
+        for l in wgdata.listeners.iter_mut() {
+            self.poll.registry().deregister(l)?;
+        }
+
+        self.nltok = 1;
+        self.count = 0;
+        // Delete wireguard interface
+        self.wgdata = None;
+        Ok(())
+    }
+
+    fn try_setup_wireguard(&mut self) -> WgResult<()> {
+        if self.wgdata.is_some() {
+            panic!("Error, tried to setup a wireguard device, but one exists already");
+        }
+
+        match WireguardDev::new(self.wgname_filter.as_deref()) {
+            Err(WgError::NoInterfaceFound) => (),
+            Err(e) => return Err(e),
+            Ok(mut wg) => {
+                // Sleep a few seconds to let time to the network management service
+                // to assign the ip addresses.
+                // This hack should ideally be replaced by listening for
+                // netlink NEWADDR events, but I really can't be bothered to implement that.
+                std::thread::sleep(Duration::new(2, 0));
+                // Register tcp listeners for each interface address
+                let listeners = self.setup_listeners(&wg.name)?;
+                if listeners.is_empty() {
+                    println!(
+                        "Warning, no address found matching {:?} on interface {}",
+                        self.ip_filter, wg.name
+                    );
+                    return Ok(());
+                }
+
+                // Register netlink wireguard events socket :
+                let mut nlstream = wg.subscribe(SockFlag::SOCK_NONBLOCK)?;
+                self.nltok = listeners.len() + 1;
+                self.poll.registry().register(
+                    &mut nlstream,
+                    Token(self.nltok),
+                    Interest::READABLE,
+                )?;
+                self.count = self.nltok + 1;
+                if self.wgname_filter.is_none() {
+                    // We didn't have an interface name specified, but in the event the interface
+                    // is removed we only want to use a new interface with the same name.
+                    self.wgname_filter.replace(wg.name.clone());
+                }
+
+                self.wgdata.replace(WireguardData {
+                    wg,
+                    nlstream,
+                    listeners,
+                });
+            }
+        }
+
+        Ok(())
+    }
+
+    fn setup_listeners(&mut self, ifname: &str) -> WgResult<Vec<TcpListener>> {
+        let mut listeners = Vec::<TcpListener>::new();
+        for (index, mut addr) in getsockaddrs(ifname).enumerate() {
+            // if self.ip_filter.is_some() && Some(&addr.ip()) != filter {
+            if self.ip_filter.map(|ip| ip != addr.ip()).unwrap_or(false) {
+                continue;
+            }
+
+            addr.set_port(self.listen_port);
+            listeners.push(TcpListener::bind(addr)?);
+            self.poll.registry().register(
+                &mut listeners[index],
+                Token(index + 1),
+                Interest::READABLE,
+            )?;
+            println!(
+                "Using wireguard interface {} and address {:?}",
+                ifname, addr
+            );
+        }
+
+        Ok(listeners)
+    }
 }
 
 #[allow(clippy::manual_map)]
@@ -231,30 +367,6 @@ pub fn getsockaddrs(ifname: &str) -> impl Iterator<Item = SocketAddr> + '_ {
         })
 }
 
-pub fn setup_interface(
-    ifname: &str,
-    registry: &Registry,
-    args: &ArgMatches,
-) -> WgResult<Vec<TcpListener>> {
-    let mut listeners = Vec::<TcpListener>::new();
-    for (index, mut addr) in getsockaddrs(ifname).enumerate() {
-        let filter = args.get_one::<IpAddr>("address");
-        if filter.is_some() && Some(&addr.ip()) != filter {
-            continue;
-        }
-
-        addr.set_port(*args.get_one::<u16>("port").expect("default"));
-        listeners.push(TcpListener::bind(addr)?);
-        registry.register(&mut listeners[index], Token(index + 1), Interest::READABLE)?;
-        println!(
-            "Using wireguard interface {} and address {:?}",
-            ifname, addr
-        );
-    }
-
-    Ok(listeners)
-}
-
 pub fn server_main(filter: Option<&String>, args: &ArgMatches) -> WgResult<()> {
     let mut server = Server {
         clients: HashMap::new(),
@@ -262,35 +374,20 @@ pub fn server_main(filter: Option<&String>, args: &ArgMatches) -> WgResult<()> {
         count: 0,
         nltok: 0,
         wgdata: None,
+        wgname_filter: filter.cloned(),
+        ip_filter: args.get_one::<IpAddr>("address").copied(),
+        listen_port: *args.get_one::<u16>("port").expect("default"),
     };
-
-    let reg = server.poll.registry();
 
     // Register netlink route link events socket :
     let linktok = 0;
     let nlroute = NetlinkRoute::new(SockFlag::empty());
     let mut linkevts = nlroute.subscribe_link(SockFlag::SOCK_NONBLOCK)?;
-    reg.register(&mut linkevts, Token(linktok), Interest::READABLE)?;
-
-    match WireguardDev::new(filter.map(|f| f.as_str())) {
-        Err(WgError::NoInterfaceFound) => (),
-        Err(e) => return Err(e),
-        Ok(mut wg) => {
-            // Register tcp listeners for each interface address
-            let listeners = setup_interface(&wg.name, reg, args)?;
-            if listeners.is_empty() {
-                let msg = format!("No address found for interface {}", wg.name);
-                return Err(WgError::Other(msg));
-            }
-
-            // Register netlink wireguard events socket :
-            let mut nlstream = wg.subscribe(SockFlag::SOCK_NONBLOCK)?;
-            server.nltok = listeners.len() + 1;
-            reg.register(&mut nlstream, Token(server.nltok), Interest::READABLE)?;
-            server.count = server.nltok + 1;
-            server.wgdata.replace(WireguardData { wg, nlstream, listeners });
-        }
-    }
+    server
+        .poll
+        .registry()
+        .register(&mut linkevts, Token(linktok), Interest::READABLE)?;
+    server.try_setup_wireguard()?;
 
     let mut events = Events::with_capacity(128);
     loop {

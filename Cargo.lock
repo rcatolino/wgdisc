@@ -510,7 +510,7 @@ checksum = "ed94fce61571a4006852b7389a063ab983c02eb1bb37b47f8272ce92d06d9538"
 [[package]]
 name = "wireguard-uapi"
 version = "0.1.0"
-source = "git+https://github.com/rcatolino/wireguard-uapi?branch=linkevts#f226485d516d74703899adb6fd934b95380b8575"
+source = "git+https://github.com/rcatolino/wireguard-uapi?branch=linkevts#a5219c6f87ab9648d0bf91794f1de13baced161c"
 dependencies = [
  "base64_light",
  "bindgen",

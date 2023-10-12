@@ -1,44 +1,94 @@
-use crate::rpc::{RecvMessage, SendMessage, MsgBuf};
+use crate::rpc::{MsgBuf, RecvMessage, SendMessage};
 use base64_light::{base64_decode, base64_encode_bytes};
 use clap::ArgMatches;
-use mio::{Poll, Events, Interest, Token};
+use mio::net::TcpStream;
+use mio::{Events, Interest, Poll, Token};
+use nix::errno;
+use nix::libc::EAGAIN;
 use nix::sys::socket::SockFlag;
 use serde_json::Deserializer;
 use std::collections::HashMap;
 use std::io::{Error as IoError, Write};
-use std::net::{IpAddr, TcpStream as StdTcpStream};
+use std::net::{IpAddr, TcpStream as StdTcpStream, Shutdown};
+use std::os::fd::OwnedFd;
 use std::time::Duration;
-use mio::net::TcpStream;
-use wireguard_uapi::netlink::{Result as WgResult, NetlinkRoute};
+use wireguard_uapi::netlink::{Error as WgError, MsgBuffer, NetlinkRoute, Result as WgResult};
 use wireguard_uapi::wireguard::{Peer, WireguardDev};
 
 type IpMap = HashMap<Vec<u8>, (IpAddr, u8)>;
 
-struct Client {
-    ip_adds: IpMap,
-    ip_removes: IpMap,
+const NLLINK_TOKEN: usize = 0;
+const SERVER_TOKEN: usize = 1;
+
+struct ConnectionData {
     wg: WireguardDev,
     stream: TcpStream,
     is_waiting_ping: bool,
-    start_peers: Vec<Peer>,
+}
+
+struct Client {
+    ip_adds: IpMap,
+    ip_removes: IpMap,
+    poll: Poll,
     buffer: MsgBuf,
+    con: Option<ConnectionData>,
+    wgname: Option<String>,
+    server_ip: String,
+    server_port: u16,
 }
 
 impl Client {
-    fn new(mut wg: WireguardDev, args: &ArgMatches) -> WgResult<Client> {
-        let start_peers = wg.get_peers()?;
-        let stream = StdTcpStream::connect((
-            args.get_one::<String>("address")
-                .expect("required")
-                .as_str(),
-            *args.get_one::<u16>("port").expect("default"),
-        ))?;
+    fn disconnect(&mut self) -> WgResult<()> {
+        let connection = self
+            .con
+            .as_mut()
+            .expect("Tried to disconnect but no connection is active.");
 
-        stream.set_nonblocking(true)?;
-        // We've just started, ask for all existing peers :
-        serde_json::to_writer(&stream, &SendMessage::GetPeerList).map_err(IoError::from)?;
-        (&stream).flush()?;
+        self.poll.registry().deregister(&mut connection.stream)?;
+        connection.stream.shutdown(Shutdown::Both)?;
+        self.con = None;
+        Ok(())
+    }
 
+    fn try_connect(&mut self) -> WgResult<()> {
+        if self.con.is_some() {
+            panic!("Error, tried to setup a wireguard device, but one exists already");
+        }
+
+        match WireguardDev::new(self.wgname.as_deref()) {
+            Err(WgError::NoInterfaceFound) => Ok(()),
+            Err(e) => Err(e),
+            Ok(wg) => {
+                std::thread::sleep(Duration::new(2, 0));
+                let stdstream = StdTcpStream::connect((self.server_ip.as_str(), self.server_port))?;
+
+                stdstream.set_nonblocking(true)?;
+                // We've just (re-)connected, ask for all existing peers :
+                serde_json::to_writer(&stdstream, &SendMessage::GetPeerList)
+                    .map_err(IoError::from)?;
+                (&stdstream).flush()?;
+
+                let mut stream = TcpStream::from_std(stdstream);
+                self.poll
+                    .registry()
+                    .register(&mut stream, Token(SERVER_TOKEN), Interest::READABLE)?;
+                if self.wgname.is_none() {
+                    // We didn't have an interface name specified, but in the event the interface
+                    // is removed we only want to use a new interface with the same name.
+                    self.wgname.replace(wg.name.clone());
+                }
+
+                self.con.replace(ConnectionData {
+                    wg,
+                    stream,
+                    is_waiting_ping: false,
+                });
+                Ok(())
+            }
+        }
+    }
+
+    fn new(filter: Option<String>, args: &ArgMatches) -> WgResult<Client> {
         // Setup allowed_ip filters
         let mut ip_adds = HashMap::new();
         let mut ip_removes = HashMap::new();
@@ -71,16 +121,23 @@ impl Client {
         Ok(Client {
             ip_adds,
             ip_removes,
-            wg,
-            stream: TcpStream::from_std(stream),
-            is_waiting_ping: false,
-            start_peers,
+            poll: Poll::new()?,
+            con: None,
             buffer: MsgBuf::new(),
+            wgname: filter,
+            server_ip: args.get_one::<String>("address").expect("required").clone(),
+            server_port: *args.get_one::<u16>("port").expect("default"),
         })
     }
 
     fn new_data_event(&mut self) -> WgResult<bool> {
-        let drained = self.buffer.drain(&mut self.stream)?;
+        let drained = self.buffer.drain(
+            &mut self
+                .con
+                .as_mut()
+                .expect("New data event called without an active connection")
+                .stream,
+        )?;
         if drained == 0 {
             // Empty read, the socket must be closed
             return Ok(true);
@@ -94,36 +151,24 @@ impl Client {
 
     fn handle_messages(&mut self) -> WgResult<usize> {
         let mut msg_stream = Deserializer::from_reader(&mut self.buffer).into_iter::<RecvMessage>();
+        let connection = self
+            .con
+            .as_mut()
+            .expect("Handling messages without an active connection");
         for mb_msg in msg_stream.by_ref() {
             match mb_msg {
                 Err(e) if e.is_eof() => (), // This just means we need to wait for more data.
                 Err(e) => {
-                    /*
-                    if Some(ErrorKind::WouldBlock) == e.io_error_kind() && self.is_waiting_ping {
-                        println!("Server ping timeout, closing connection");
-                        return Err(IoError::from(e).into());
-                    } else if Some(ErrorKind::WouldBlock) == e.io_error_kind() {
-                        serde_json::to_writer(&self.stream, &SendMessage::Ping)
-                            .map_err(IoError::from)?;
-                        self.stream.flush()?;
-                        self.is_waiting_ping = true;
-                        return Ok(0);
-                    } else {
-                        println!("IO Error : {:?}", e.io_error_kind());
-                        return Err(IoError::from(e).into());
-                    }
-                    */
                     return Err(IoError::from(e).into());
                 }
 
                 Ok(RecvMessage::AddPeer(mut peer)) => {
                     Self::filter_allowed_ips(&mut peer, &self.ip_adds, &self.ip_removes);
                     println!("Updating peer {}", peer);
-                    self.wg.set_peers([&peer])?;
+                    connection.wg.set_peers([&peer])?;
                 }
                 Ok(RecvMessage::AddPeers(mut peer_list)) => {
-                    let wg = &mut self.wg;
-                    wg.set_peers(peer_list.iter_mut().map(|p| {
+                    connection.wg.set_peers(peer_list.iter_mut().map(|p| {
                         println!("Updating peer {}", p);
                         Self::filter_allowed_ips(p, &self.ip_adds, &self.ip_removes);
                         &*p
@@ -131,10 +176,10 @@ impl Client {
                 }
                 Ok(RecvMessage::DeletePeer(key)) => {
                     println!("Removing peer {}", base64_encode_bytes(key.as_slice()));
-                    self.wg.remove_peer(&key)?
+                    connection.wg.remove_peer(&key)?
                 }
                 Ok(RecvMessage::Ping) => {
-                    self.is_waiting_ping = false;
+                    connection.is_waiting_ping = false;
                 }
                 _ => println!("Unsupported message"),
             };
@@ -163,8 +208,42 @@ impl Client {
         ip_adds.insert(pubkey, (ip.parse().ok()?, mask.parse().ok()?));
         Some(())
     }
+
+    fn link_change(&mut self, buffer: &mut MsgBuffer<OwnedFd>) -> WgResult<()> {
+        for mb_msg in buffer.iter_links() {
+            match mb_msg {
+                // EAGAIN indicates that there is noting more to read from netlink
+                Err(WgError::OsError(no)) if no == errno::from_i32(EAGAIN) => break,
+                Ok((16, ifinfo)) => {
+                    if self.con.is_some() {
+                        println!("RTM_NEWLINK event ignored because we already have a device");
+                    } else {
+                        // self.newlink_event(ifinfo)
+                        println!("RTM_NEWLINK event {:?}", ifinfo);
+                        // TODO: optionally use ifinfo to help wireguard setup
+                        self.try_connect()?;
+                    }
+                }
+                Ok((17, ifinfo)) => {
+                    if let Some(ref con) = self.con {
+                        println!("RTM_DELLINK event, {:?}", ifinfo);
+                        if con.wg.index == ifinfo.index {
+                            self.disconnect()?;
+                        }
+                    }
+                }
+                Ok((msgtype, ifinfo)) => {
+                    println!("Warning, unsupported link event {} : {:?}", msgtype, ifinfo);
+                }
+                Err(e) => return Err(e),
+            }
+        }
+
+        Ok(())
+    }
 }
 
+/*
 impl Drop for Client {
     fn drop(&mut self) {
         // Restore initial state :
@@ -173,29 +252,29 @@ impl Drop for Client {
         }
     }
 }
+*/
 
 pub fn client_main(filter: Option<&String>, args: &ArgMatches) -> WgResult<()> {
-    let wg = WireguardDev::new(filter.map(|f| f.as_str()))?;
-    let mut c = Client::new(wg, args)?;
-    let mut poll = Poll::new()?;
+    let mut c = Client::new(filter.cloned(), args)?;
+    c.try_connect()?;
+
     let nlroute = NetlinkRoute::new(SockFlag::empty());
     let mut linkevts = nlroute.subscribe_link(SockFlag::SOCK_NONBLOCK)?;
+    c.poll
+        .registry()
+        .register(&mut linkevts, Token(NLLINK_TOKEN), Interest::READABLE)?;
 
-    poll.registry().register(&mut linkevts, Token(0), Interest::READABLE)?;
-    poll.registry().register(&mut c.stream, Token(1), Interest::READABLE)?;
     let mut events = Events::with_capacity(128);
     'outer: loop {
-        poll.poll(&mut events, Some(Duration::new(60, 0)))?;
+        c.poll.poll(&mut events, Some(Duration::new(60, 0)))?;
 
         for event in events.iter() {
             let token = event.token().0;
             match token {
-                t if t == 0 => {
-                    for mb_msg in linkevts.iter_links() {
-                        println!("New link event : {:?}", mb_msg);
-                    }
+                NLLINK_TOKEN => {
+                    c.link_change(&mut linkevts)?;
                 }
-                t if t == 1 => {
+                SERVER_TOKEN => {
                     if c.new_data_event()? {
                         println!("Server connection closed");
                         break 'outer;
@@ -207,15 +286,20 @@ pub fn client_main(filter: Option<&String>, args: &ArgMatches) -> WgResult<()> {
 
         // Timeout, send keepalive ping
         if events.is_empty() {
-            if c.is_waiting_ping {
-                println!("Server ping timeout, closing connection");
-                break 'outer;
-            }
+            match c.con.as_mut() {
+                Some(connection) => {
+                    if connection.is_waiting_ping {
+                        println!("Server ping timeout, closing connection");
+                        break 'outer;
+                    }
 
-            serde_json::to_writer(&c.stream, &SendMessage::Ping)
-                .map_err(IoError::from)?;
-            c.stream.flush()?;
-            c.is_waiting_ping = true;
+                    serde_json::to_writer(&connection.stream, &SendMessage::Ping)
+                        .map_err(IoError::from)?;
+                    connection.stream.flush()?;
+                    connection.is_waiting_ping = true;
+                }
+                None => (), // TODO: check server connection and try to reconnect ?
+            }
         }
     }
 

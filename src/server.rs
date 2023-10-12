@@ -11,16 +11,14 @@ use nix::sys::socket::SockFlag;
 use serde::Serialize;
 use serde_json::Deserializer;
 use std::collections::HashMap;
-use std::io::ErrorKind;
-use std::io::Result as IoResult;
-use std::io::{Error as IoError, Write};
+use std::io::{Error as IoError, ErrorKind, Result as IoResult, Write};
 use std::net::{IpAddr, Shutdown, SocketAddr};
 use std::os::fd::{AsRawFd, OwnedFd};
 use std::time::Duration;
 use wireguard_uapi::netlink::{
-    wgdevice_attribute, AttributeIterator, AttributeType, MsgBuffer, Result as WgResult, SubHeader,
+    wgdevice_attribute, AttributeIterator, AttributeType, Error as WgError, MsgBuffer,
+    NetlinkRoute, Result as WgResult, SubHeader,
 };
-use wireguard_uapi::netlink::{Error as WgError, NetlinkRoute};
 use wireguard_uapi::wireguard::{Peer, WireguardDev};
 
 struct Client {
@@ -158,9 +156,9 @@ impl Server {
             addr,
         };
 
-        // Update each pre-existing clients to tell them about the new peer
         self.clients.insert(self.count, c);
-        self.count += 1;
+        self.count += 1; // count will overflow when we reach usize::MAX clients, we must build
+                         // with panic-on-overflow to prevent any polling confusion in that case.
         Ok(())
     }
 

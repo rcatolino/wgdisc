@@ -23,6 +23,7 @@ pub enum RecvMessage {
     GetPeerList,
 }
 
+/// Buffer used for non-blocking deserialization
 pub struct MsgBuf {
     inner: VecDeque<u8>,
     position: usize,
@@ -54,6 +55,8 @@ impl MsgBuf {
         }
     }
 
+    /// Copy as much data as possible from the source into the inner buffer.
+    /// Does not return an error if the underlying source returns EAGAIN/EWOULDBLOCK.
     pub fn drain<T: Read>(&mut self, source: &mut T) -> Result<usize> {
         let previous_size = self.inner.len();
         match copy(source, &mut self.inner) {
@@ -68,6 +71,9 @@ impl MsgBuf {
         self.inner.len()
     }
 
+    /// Indicates that `amt` bytes of data have been used and can be discarded from the buffer.
+    /// The read head is reset to the start of the buffer, so any data that was prevously read
+    /// beyond `amt` (incomplete messages) will be read again.
     pub fn consume(&mut self, amt: usize) {
         self.position = 0;
         self.inner.drain(..amt);

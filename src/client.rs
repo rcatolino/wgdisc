@@ -9,7 +9,7 @@ use nix::sys::socket::SockFlag;
 use serde_json::Deserializer;
 use std::collections::HashMap;
 use std::io::{Error as IoError, Write};
-use std::net::{IpAddr, TcpStream as StdTcpStream, Shutdown};
+use std::net::{IpAddr, Shutdown, TcpStream as StdTcpStream};
 use std::os::fd::OwnedFd;
 use std::time::Duration;
 use wireguard_uapi::netlink::{Error as WgError, MsgBuffer, NetlinkRoute, Result as WgResult};
@@ -69,9 +69,11 @@ impl Client {
                 (&stdstream).flush()?;
 
                 let mut stream = TcpStream::from_std(stdstream);
-                self.poll
-                    .registry()
-                    .register(&mut stream, Token(SERVER_TOKEN), Interest::READABLE)?;
+                self.poll.registry().register(
+                    &mut stream,
+                    Token(SERVER_TOKEN),
+                    Interest::READABLE,
+                )?;
                 if self.wgname.is_none() {
                     // We didn't have an interface name specified, but in the event the interface
                     // is removed we only want to use a new interface with the same name.
@@ -242,17 +244,6 @@ impl Client {
         Ok(())
     }
 }
-
-/*
-impl Drop for Client {
-    fn drop(&mut self) {
-        // Restore initial state :
-        if let Err(e) = self.wg.set_peers(self.start_peers.iter()) {
-            println!("Warning, couldn't restore peer state on exit : {:?}", e);
-        }
-    }
-}
-*/
 
 pub fn client_main(filter: Option<&String>, args: &ArgMatches) -> WgResult<()> {
     let mut c = Client::new(filter.cloned(), args)?;

@@ -1,12 +1,15 @@
-use crate::rpc::{RecvMessage, SendMessage};
+use crate::rpc::{RecvMessage, SendMessage, MsgBuf};
 use base64_light::{base64_decode, base64_encode_bytes};
 use clap::ArgMatches;
+use mio::{Poll, Events, Interest, Token};
+use nix::sys::socket::SockFlag;
 use serde_json::Deserializer;
 use std::collections::HashMap;
-use std::io::{Error as IoError, ErrorKind, Write};
-use std::net::{IpAddr, TcpStream};
+use std::io::{Error as IoError, Write};
+use std::net::{IpAddr, TcpStream as StdTcpStream};
 use std::time::Duration;
-use wireguard_uapi::netlink::Result as WgResult;
+use mio::net::TcpStream;
+use wireguard_uapi::netlink::{Result as WgResult, NetlinkRoute};
 use wireguard_uapi::wireguard::{Peer, WireguardDev};
 
 type IpMap = HashMap<Vec<u8>, (IpAddr, u8)>;
@@ -18,19 +21,20 @@ struct Client {
     stream: TcpStream,
     is_waiting_ping: bool,
     start_peers: Vec<Peer>,
+    buffer: MsgBuf,
 }
 
 impl Client {
     fn new(mut wg: WireguardDev, args: &ArgMatches) -> WgResult<Client> {
         let start_peers = wg.get_peers()?;
-        let stream = TcpStream::connect((
+        let stream = StdTcpStream::connect((
             args.get_one::<String>("address")
                 .expect("required")
                 .as_str(),
             *args.get_one::<u16>("port").expect("default"),
         ))?;
 
-        stream.set_read_timeout(Some(Duration::new(60, 0))).unwrap();
+        stream.set_nonblocking(true)?;
         // We've just started, ask for all existing peers :
         serde_json::to_writer(&stream, &SendMessage::GetPeerList).map_err(IoError::from)?;
         (&stream).flush()?;
@@ -68,18 +72,33 @@ impl Client {
             ip_adds,
             ip_removes,
             wg,
-            stream,
+            stream: TcpStream::from_std(stream),
             is_waiting_ping: false,
             start_peers,
+            buffer: MsgBuf::new(),
         })
     }
 
-    fn handle_messages(&mut self) -> WgResult<bool> {
-        let msg_stream = Deserializer::from_reader(&self.stream).into_iter::<RecvMessage>();
-        for mb_msg in msg_stream {
-            let msg = match mb_msg {
-                Ok(msg) => msg,
+    fn new_data_event(&mut self) -> WgResult<bool> {
+        let drained = self.buffer.drain(&mut self.stream)?;
+        if drained == 0 {
+            // Empty read, the socket must be closed
+            return Ok(true);
+        } else {
+            let consumed = self.handle_messages()?;
+            self.buffer.consume(consumed);
+        }
+
+        Ok(false)
+    }
+
+    fn handle_messages(&mut self) -> WgResult<usize> {
+        let mut msg_stream = Deserializer::from_reader(&mut self.buffer).into_iter::<RecvMessage>();
+        for mb_msg in msg_stream.by_ref() {
+            match mb_msg {
+                Err(e) if e.is_eof() => (), // This just means we need to wait for more data.
                 Err(e) => {
+                    /*
                     if Some(ErrorKind::WouldBlock) == e.io_error_kind() && self.is_waiting_ping {
                         println!("Server ping timeout, closing connection");
                         return Err(IoError::from(e).into());
@@ -88,39 +107,40 @@ impl Client {
                             .map_err(IoError::from)?;
                         self.stream.flush()?;
                         self.is_waiting_ping = true;
-                        return Ok(false);
+                        return Ok(0);
                     } else {
                         println!("IO Error : {:?}", e.io_error_kind());
                         return Err(IoError::from(e).into());
                     }
+                    */
+                    return Err(IoError::from(e).into());
                 }
-            };
 
-            match msg {
-                RecvMessage::AddPeer(mut peer) => {
+                Ok(RecvMessage::AddPeer(mut peer)) => {
                     Self::filter_allowed_ips(&mut peer, &self.ip_adds, &self.ip_removes);
                     println!("Updating peer {}", peer);
                     self.wg.set_peers([&peer])?;
                 }
-                RecvMessage::AddPeers(mut peer_list) => {
+                Ok(RecvMessage::AddPeers(mut peer_list)) => {
                     let wg = &mut self.wg;
                     wg.set_peers(peer_list.iter_mut().map(|p| {
+                        println!("Updating peer {}", p);
                         Self::filter_allowed_ips(p, &self.ip_adds, &self.ip_removes);
                         &*p
                     }))?
                 }
-                RecvMessage::DeletePeer(key) => {
+                Ok(RecvMessage::DeletePeer(key)) => {
                     println!("Removing peer {}", base64_encode_bytes(key.as_slice()));
                     self.wg.remove_peer(&key)?
                 }
-                RecvMessage::Ping => {
+                Ok(RecvMessage::Ping) => {
                     self.is_waiting_ping = false;
                 }
                 _ => println!("Unsupported message"),
             };
         }
 
-        Ok(true) // No more message, and no error. The connection must be closed.
+        Ok(msg_stream.byte_offset())
     }
 
     fn filter_allowed_ips(peer: &mut Peer, ip_adds: &IpMap, ip_removes: &IpMap) {
@@ -157,10 +177,45 @@ impl Drop for Client {
 pub fn client_main(filter: Option<&String>, args: &ArgMatches) -> WgResult<()> {
     let wg = WireguardDev::new(filter.map(|f| f.as_str()))?;
     let mut c = Client::new(wg, args)?;
-    loop {
-        if c.handle_messages()? {
-            println!("Server connection closed");
-            break;
+    let mut poll = Poll::new()?;
+    let nlroute = NetlinkRoute::new(SockFlag::empty());
+    let mut linkevts = nlroute.subscribe_link(SockFlag::SOCK_NONBLOCK)?;
+
+    poll.registry().register(&mut linkevts, Token(0), Interest::READABLE)?;
+    poll.registry().register(&mut c.stream, Token(1), Interest::READABLE)?;
+    let mut events = Events::with_capacity(128);
+    'outer: loop {
+        poll.poll(&mut events, Some(Duration::new(60, 0)))?;
+
+        for event in events.iter() {
+            let token = event.token().0;
+            match token {
+                t if t == 0 => {
+                    for mb_msg in linkevts.iter_links() {
+                        println!("New link event : {:?}", mb_msg);
+                    }
+                }
+                t if t == 1 => {
+                    if c.new_data_event()? {
+                        println!("Server connection closed");
+                        break 'outer;
+                    }
+                }
+                _ => panic!("Unknown token"),
+            }
+        }
+
+        // Timeout, send keepalive ping
+        if events.is_empty() {
+            if c.is_waiting_ping {
+                println!("Server ping timeout, closing connection");
+                break 'outer;
+            }
+
+            serde_json::to_writer(&c.stream, &SendMessage::Ping)
+                .map_err(IoError::from)?;
+            c.stream.flush()?;
+            c.is_waiting_ping = true;
         }
     }
 

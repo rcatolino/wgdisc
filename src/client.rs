@@ -277,6 +277,7 @@ pub fn client_main(filter: Option<&String>, args: &ArgMatches) -> WgResult<()> {
 
         // Timeout, send keepalive ping
         if events.is_empty() {
+            #[allow(clippy::single_match)]
             match c.con.as_mut() {
                 Some(connection) => {
                     if connection.is_waiting_ping {

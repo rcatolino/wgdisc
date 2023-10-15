@@ -100,10 +100,9 @@ impl Server {
 
     fn is_peer_connected(&self, pubkey: &[u8]) -> bool {
         self.clients
-            .iter()
-            .map(|(_, c)| c.pubkey.as_slice())
-            .find(|p| p == &pubkey)
-            .is_some()
+            .values()
+            .map(|c| c.pubkey.as_slice())
+            .any(|p| p == pubkey)
     }
 
     fn peer_from_attr<F: AsRawFd>(
@@ -166,7 +165,7 @@ impl Server {
         };
 
         // Send new peer to each pre-existing client
-        self.send_all_clients(&SendMessage::AddPeer(&peer))?;
+        self.send_all_clients(&SendMessage::AddPeer(peer))?;
         self.clients.insert(self.count, c);
         self.count += 1; // count will overflow when we reach usize::MAX clients, we must build
                          // with panic-on-overflow to prevent any polling confusion in that case.
@@ -445,7 +444,7 @@ pub fn server_main(filter: Option<&String>, args: &ArgMatches) -> WgResult<()> {
                     if event.is_read_closed() || should_close {
                         println!(
                             "Closing client {}",
-                            base64_encode_bytes(&client.pubkey.as_slice())
+                            base64_encode_bytes(client.pubkey.as_slice())
                         );
                         server.poll.registry().deregister(&mut client.stream)?;
                         if let Some(removed) = server.clients.remove(&token) {

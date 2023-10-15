@@ -98,6 +98,14 @@ impl Server {
         best_match
     }
 
+    fn is_peer_connected(&self, pubkey: &[u8]) -> bool {
+        self.clients
+            .iter()
+            .map(|(_, c)| c.pubkey.as_slice())
+            .find(|p| p == &pubkey)
+            .is_some()
+    }
+
     fn peer_from_attr<F: AsRawFd>(
         &self,
         wgindex: i32,
@@ -118,7 +126,8 @@ impl Server {
         }
 
         if Some(wgindex as u32) == ifindex {
-            peer
+            // We ignore any peer that is not a wgdisc client
+            peer.filter(|p| self.is_peer_connected(p.peer_key.as_slice()))
         } else {
             // This event isn't for the interface we are monitoring
             None
@@ -156,6 +165,8 @@ impl Server {
             addr,
         };
 
+        // Send new peer to each pre-existing client
+        self.send_all_clients(&SendMessage::AddPeer(&peer))?;
         self.clients.insert(self.count, c);
         self.count += 1; // count will overflow when we reach usize::MAX clients, we must build
                          // with panic-on-overflow to prevent any polling confusion in that case.
@@ -408,13 +419,19 @@ pub fn server_main(filter: Option<&String>, args: &ArgMatches) -> WgResult<()> {
                 }
                 t if t > server.nltok => {
                     // Client event
+                    let wgdata = server.wgdata.as_mut().expect("Error, received wg client event, but no wireguard interface is configured.");
+                    // Filter peers to keep only those currently connected
+                    let peers: Vec<Peer> = wgdata
+                        .wg
+                        .get_peers()?
+                        .into_iter()
+                        .filter(|p| server.is_peer_connected(&p.peer_key))
+                        .collect();
+
                     let client = server
                         .clients
                         .get_mut(&token)
                         .expect("Polled event from non existing client !");
-
-                    let wgdata = server.wgdata.as_mut().expect("Error, received wg client event, but no wireguard interface is configured.");
-                    let peers = wgdata.wg.get_peers()?;
                     let should_close = match client.new_data_event(&peers) {
                         Ok(should_close) => should_close,
                         Err(e) => {
@@ -428,10 +445,15 @@ pub fn server_main(filter: Option<&String>, args: &ArgMatches) -> WgResult<()> {
                     if event.is_read_closed() || should_close {
                         println!(
                             "Closing client {}",
-                            base64_encode_bytes(client.pubkey.as_slice())
+                            base64_encode_bytes(&client.pubkey.as_slice())
                         );
                         server.poll.registry().deregister(&mut client.stream)?;
-                        server.clients.remove(&token);
+                        if let Some(removed) = server.clients.remove(&token) {
+                            // Tell remaining clients this peer must be removed
+                            server.send_all_clients(&SendMessage::DeletePeer(
+                                removed.pubkey.as_slice(),
+                            ))?;
+                        }
                     }
                 }
                 _ => unreachable!(),
